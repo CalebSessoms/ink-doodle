@@ -102,6 +102,14 @@ ink-doodle/
 
 ---
 
+## Screenshots
+
+### Example View
+![Project Selection Screenshot](images/picker.png)
+![Chapter Screenshot](images/chapter.png)
+![Notes Screenshot](images/notes.png)
+![References Selection Screenshot](images/references.png)
+
 ## Author
 Caleb Sessoms  
 Developed as part of the CS399 Independent Project (Computer Science A.S. Program)  
