@@ -1,0 +1,360 @@
+:root {
+  --bg: #ffffff;
+  --fg: #111827;
+  --muted: #6b7280;
+  --card: #f7f7f7;
+  --border: #e5e7eb;
+  --accent: #2563eb;
+  --accentH: #1d4ed8;
+  --danger: #dc2626;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, Segoe UI, Roboto, Inter, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* ─────────── Top bar ─────────── */
+
+.topbar {
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.topbar-left .divider {
+  color: var(--muted);
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+#project-name {
+  outline: none;
+  padding: 2px 4px;
+  border-radius: 6px;
+}
+
+#project-name:focus {
+  background: var(--card);
+}
+
+/* ─────────── Main Split Layout ─────────── */
+
+.main {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  min-height: 0;
+  position: relative;
+}
+
+/* ─────────── Sidebar ─────────── */
+
+.sidebar {
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--bg);
+}
+
+.sidebar-header {
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+}
+
+.tabs {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab {
+  border: none;
+  background: transparent;
+  padding: 6px 10px;
+  cursor: pointer;
+  color: var(--muted);
+  border-bottom: 2px solid transparent;
+}
+
+.tab.active {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+.entry-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  overflow: auto;
+  flex: 1;
+}
+
+.entry {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  cursor: pointer;
+  gap: 8px;
+}
+
+.entry:hover {
+  background: var(--card);
+}
+
+.entry.selected {
+  border-left: 4px solid var(--accent);
+  background: #f3f6ff;
+}
+
+.entry .title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 70%;
+}
+
+.entry .meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.sidebar-footer {
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ─────────── Editor ─────────── */
+
+.editor {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  position: relative;
+}
+
+.editor-header {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* NEW: Title row with delete button beside input */
+.title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Title input shortened to make room for delete */
+.title-row .title-input {
+  flex: 1 1 auto;
+  min-width: 220px;
+  max-width: 960px;
+}
+
+.title-input {
+  font-size: 20px;
+  font-weight: 600;
+  border: none;
+  outline: none;
+  padding: 4px 6px;
+  background: transparent;
+  border-left: 4px solid transparent;
+}
+
+.title-input:focus {
+  background: var(--card);
+  border-left-color: var(--accent);
+}
+
+/* Inline delete button beside title */
+#editor-delete-btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  align-self: flex-start;
+}
+
+.meta-row {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.meta-row label {
+  color: #374151;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 14px;
+}
+
+.meta-row select,
+.meta-row input {
+  border: 1px solid var(--border);
+  padding: 6px 8px;
+  border-radius: 6px;
+  outline: none;
+  background: white;
+  min-width: 140px;
+}
+
+.section-label {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.synopsis {
+  min-height: 120px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  resize: vertical;
+}
+
+.body {
+  flex: 1;
+  min-height: 260px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+/* ─────────── Bottom Info Bar ─────────── */
+
+.bottom-bar {
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--muted);
+}
+
+/* ─────────── Buttons ─────────── */
+
+.btn {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  background: #fff;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.btn:hover {
+  background: #f9fafb;
+}
+
+.btn.primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.btn.primary:hover {
+  background: var(--accentH);
+}
+
+/* NEW: Danger button styling */
+.btn.danger {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: #fff;
+}
+.btn.danger:hover {
+  background: #fff5f5;
+}
+
+/* ─────────── Empty State ─────────── */
+
+.empty-state {
+  flex: 1;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  position: absolute;
+  inset: 48px 0 0 280px; /* below topbar, right of sidebar */
+  pointer-events: none;
+  background: transparent;
+}
+
+.empty-card {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  width: 360px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.05);
+  text-align: center;
+  pointer-events: auto;
+}
+
+.empty-card h3 {
+  margin: 0 0 8px 0;
+}
+
+.empty-card p {
+  margin: 0 0 16px 0;
+  color: var(--muted);
+}
+
+.empty-card .actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+
+/* ─────────── Utilities ─────────── */
+
+.hidden {
+  display: none !important;
+}
+

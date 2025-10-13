@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Ink Doodle</title>
+  <link rel="stylesheet" href="./src/renderer/app.css" />
+</head>
+<body>
+  <div class="app">
+    <!-- Top App Bar -->
+    <header class="topbar">
+      <div class="topbar-left">
+        <strong>Ink Doodle</strong>
+        <span class="divider">•</span>
+        <span id="project-name" contenteditable="true" spellcheck="false">Untitled Project</span>
+      </div>
+      <div class="topbar-right">
+        <span id="last-saved">Last saved • —</span>
+        <button class="btn primary" id="save-btn" type="button">Save ▾</button>
+      </div>
+    </header>
+
+    <!-- Main Content: Sidebar + Editor -->
+    <main class="main">
+      <!-- Left Sidebar -->
+      <aside class="sidebar" aria-label="Writing sidebar">
+        <div class="sidebar-header">
+          <h2>Writing</h2>
+          <button class="btn" id="new-btn" type="button">+ New</button>
+        </div>
+
+        <div class="tabs" role="tablist" aria-label="Entry Types">
+          <button class="tab active" data-tab="chapters" role="tab" aria-selected="true" aria-controls="entry-list">Chapters</button>
+          <button class="tab" data-tab="notes" role="tab" aria-selected="false" aria-controls="entry-list">Notes</button>
+          <button class="tab" data-tab="references" role="tab" aria-selected="false" aria-controls="entry-list">References</button>
+        </div>
+
+        <ul class="entry-list" id="entry-list" aria-label="Entries"></ul>
+
+        <div class="sidebar-footer" title="Project path">
+          C:\Users\You\Documents\InkDoodle
+        </div>
+      </aside>
+
+      <!-- Editor Pane -->
+      <section class="editor" aria-label="Editor">
+        <div class="editor-header">
+            <div class="title-row">
+                <input
+                    class="title-input"
+                    id="title-input"
+                    placeholder="Untitled"
+                    value=""
+                    spellcheck="false"
+                    aria-label="Title"
+                />
+                <button class="btn danger" id="editor-delete-btn" type="button" title="Delete entry">🗑 Delete</button>
+            </div>
+
+            <div class="meta-row">
+            <!-- Chapters: Status -->
+            <label id="status-wrapper">
+              Status
+              <select id="status" aria-label="Status">
+                <option>Draft</option>
+                <option>Revise</option>
+                <option>Final</option>
+              </select>
+            </label>
+
+            <!-- Shared: Tags -->
+            <label class="tags" id="tags-wrapper">
+              Tags
+              <input id="tags" placeholder="add tag and press Enter" aria-label="Tags"/>
+            </label>
+
+            <!-- Notes-only -->
+            <label id="note-category-wrapper" class="meta-extra hidden">
+              Category
+              <select id="note-category" aria-label="Note Category">
+                <option>Research</option>
+                <option>Idea</option>
+                <option>To-do</option>
+                <option>Misc</option>
+              </select>
+            </label>
+
+            <label id="note-pin-wrapper" class="meta-extra hidden">
+              <input type="checkbox" id="note-pin" aria-label="Pin Note"/> Pin
+            </label>
+
+            <!-- References-only -->
+            <label id="reference-type-wrapper" class="meta-extra hidden">
+              Reference Type
+              <select id="reference-type" aria-label="Reference Type">
+                <option>Glossary</option>
+                <option>Timeline</option>
+                <option>Resource</option>
+                <option>Misc</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <!-- Chapters: Synopsis; References repurpose as Summary -->
+        <label class="section-label" id="synopsis-label" for="synopsis">Synopsis</label>
+        <textarea id="synopsis" class="synopsis" placeholder="One-paragraph summary..." aria-label="Synopsis"></textarea>
+
+        <!-- References-only: Source Link -->
+        <label class="section-label hidden" id="source-link-label" for="source-link">Source Link</label>
+        <input id="source-link" class="hidden" placeholder="https://example.com/resource" aria-label="Source Link"/>
+
+        <label class="section-label" id="body-label" for="body">Body</label>
+        <textarea id="body" class="body" placeholder="Start writing..." aria-label="Body"></textarea>
+
+        <div class="bottom-bar" role="status">
+          <div class="left" id="word-count">Words: 0</div>
+          <div class="right" id="save-state">Unsaved • Ctrl+S</div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Empty state overlay (shown when there are no entries) -->
+  <div id="empty-state" class="empty-state" aria-live="polite" aria-atomic="true">
+    <div class="empty-card">
+      <h3>No entries yet</h3>
+      <p>Create your first item to start writing.</p>
+      <div class="actions">
+        <button class="btn primary" data-new="chapter" type="button">+ New Chapter</button>
+        <button class="btn" data-new="note" type="button">+ New Note</button>
+        <button class="btn" data-new="reference" type="button">+ New Reference</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="./src/renderer/app.js"></script>
+</body>
+</html>

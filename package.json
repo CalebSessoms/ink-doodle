@@ -1,0 +1,24 @@
+{
+  "name": "ink-doodle",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CalebSessoms/ink-doodle.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/CalebSessoms/ink-doodle/issues"
+  },
+  "homepage": "https://github.com/CalebSessoms/ink-doodle#readme",
+  "devDependencies": {
+    "electron": "^38.2.2"
+  }
+}

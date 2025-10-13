@@ -1,0 +1,22 @@
+﻿# dependencies
+node_modules/
+node_modules - Copy/
+
+# build / dist
+dist/
+out/
+release/
+
+# electron user data workspace (runtime copy)
+workspace/
+src/data/
+
+# OS + editor
+.DS_Store
+Thumbs.db
+.vscode/
+*.log
+
+# accidental copies
+src - Copy/
+* - Copy/
