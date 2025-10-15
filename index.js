@@ -92,6 +92,14 @@ function buildMenu() {
             w && w.webContents.send("menu:openPicker");
           },
         },
+        {
+          label: "Find…",                  // ADDED
+          accelerator: "CmdOrCtrl+F",      // ADDED
+          click: () => {                   // ADDED
+            const w = BrowserWindow.getFocusedWindow() || win;
+            w && w.webContents.send("menu:openFinder");
+          },
+        },
         { type: "separator" },
         {
           label: "Save",

@@ -58,6 +58,164 @@
   // Will be set after we know workspacePath:
   let SAVE_FILE = null; // <workspace>/data/project.json
 
+  // ───────────── Finder Modal ─────────────
+  let finderEl = null;
+  let finderInput = null;
+  let finderList = null;
+  let finderAllScope = true; // search across all types by default
+
+  function ensureFinder() {
+    if (finderEl) return finderEl;
+    finderEl = document.createElement("div");
+    finderEl.id = "finder";
+    finderEl.innerHTML = `
+      <div class="card" role="dialog" aria-modal="true" aria-label="Find">
+        <div class="row">
+          <input id="finder-input" type="text" placeholder="Find by title or tag… (Esc to close)" />
+          <div class="scopes">
+            <label class="scope"><input type="checkbox" id="finder-scope-all" checked /> All</label>
+            <label class="scope"><input type="checkbox" id="finder-scope-ch" /> Chapters</label>
+            <label class="scope"><input type="checkbox" id="finder-scope-no" /> Notes</label>
+            <label class="scope"><input type="checkbox" id="finder-scope-re" /> References</label>
+          </div>
+          <button id="finder-close" class="btn">Close</button>
+        </div>
+        <div id="finder-list" class="list" role="listbox" aria-label="Results"></div>
+      </div>
+    `;
+    document.body.appendChild(finderEl);
+
+    finderInput = finderEl.querySelector("#finder-input");
+    finderList  = finderEl.querySelector("#finder-list");
+
+    const scopeAll = finderEl.querySelector("#finder-scope-all");
+    const scopeCh  = finderEl.querySelector("#finder-scope-ch");
+    const scopeNo  = finderEl.querySelector("#finder-scope-no");
+    const scopeRe  = finderEl.querySelector("#finder-scope-re");
+
+    function readScopes() {
+      if (scopeAll.checked) return { all: true, types: ["chapter","note","reference"] };
+      const types = [];
+      if (scopeCh.checked) types.push("chapter");
+      if (scopeNo.checked) types.push("note");
+      if (scopeRe.checked) types.push("reference");
+      return { all: false, types: types.length ? types : ["chapter","note","reference"] };
+    }
+
+    function selectEntryFromFinder(entry) {
+      const tab = typeTabMap[entry.type];
+      if (tab && tab !== state.activeTab) switchTab(tab);
+      selectEntry(entry.id);
+      hideFinder();
+    }
+
+    function renderResults(query) {
+      const q = (query || "").trim().toLowerCase();
+      const { types } = readScopes();
+      const pool = state.entries.filter(e => types.includes(e.type));
+
+      let results = pool;
+      if (q) {
+        results = pool.filter(e => {
+          const titleHit = (e.title || "").toLowerCase().includes(q);
+          const tagHit = (e.tags || []).some(t => (t || "").toLowerCase().includes(q));
+          return titleHit || tagHit;
+        });
+      }
+      results = results
+        .sort((a,b) => (b.updated_at || "").localeCompare(a.updated_at || ""))
+        .slice(0, 100);
+
+      finderList.innerHTML = "";
+      if (!results.length) {
+        finderList.innerHTML = `<div class="item"><div class="left"><span class="meta">No results</span></div></div>`;
+        return;
+      }
+
+      for (const e of results) {
+        const row = document.createElement("div");
+        row.className = "item";
+        row.innerHTML = `
+          <div class="left">
+            <span class="badge">${e.type}</span>
+            <span class="title">${e.title || "(Untitled)"}</span>
+          </div>
+          <div class="meta">${timeAgo(e.updated_at)}${(e.tags && e.tags.length) ? " • " + e.tags.join(", ") : ""}</div>
+        `;
+        row.addEventListener("click", () => selectEntryFromFinder(e));
+        finderList.appendChild(row);
+      }
+    }
+
+    finderInput.addEventListener("input", () => renderResults(finderInput.value));
+    finderEl.querySelector("#finder-close").addEventListener("click", hideFinder);
+    [ "#finder-scope-all", "#finder-scope-ch", "#finder-scope-no", "#finder-scope-re" ]
+      .forEach(sel => finderEl.querySelector(sel).addEventListener("change", () => {
+        if (sel === "#finder-scope-all") {
+          const checked = finderEl.querySelector(sel).checked;
+          finderEl.querySelector("#finder-scope-ch").checked = !checked;
+          finderEl.querySelector("#finder-scope-no").checked = !checked;
+          finderEl.querySelector("#finder-scope-re").checked = !checked;
+        } else {
+          finderEl.querySelector("#finder-scope-all").checked = false;
+        }
+        renderResults(finderInput.value);
+      }));
+
+    finderInput.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        const first = finderList.querySelector(".item");
+        if (first) first.click();
+      } else if (ev.key === "Escape") {
+        hideFinder();
+      }
+    });
+
+    return finderEl;
+  }
+
+  function showFinder(prefill = "") {
+    ensureFinder();
+    finderEl.style.display = "flex";
+    finderInput.value = prefill || "";
+    finderInput.focus();
+    finderInput.setSelectionRange(0, finderInput.value.length);
+
+    // if no query, show recents
+    finderList.innerHTML = "";
+    if (!finderInput.value.trim()) {
+      const recent = state.entries
+        .slice()
+        .sort((a,b) => (b.updated_at || "").localeCompare(a.updated_at || ""))
+        .slice(0, 50);
+      for (const e of recent) {
+        const row = document.createElement("div");
+        row.className = "item";
+        row.innerHTML = `
+          <div class="left">
+            <span class="badge">${e.type}</span>
+            <span class="title">${e.title || "(Untitled)"}</span>
+          </div>
+          <div class="meta">${timeAgo(e.updated_at)}${(e.tags && e.tags.length) ? " • " + e.tags.join(", ") : ""}</div>
+        `;
+        row.addEventListener("click", () => {
+          const tab = typeTabMap[e.type];
+          if (tab && tab !== state.activeTab) switchTab(tab);
+          selectEntry(e.id);
+          hideFinder();
+        });
+        finderList.appendChild(row);
+      }
+    } else {
+      finderInput.dispatchEvent(new Event("input"));
+    }
+  }
+
+  function hideFinder() {
+    if (!finderEl) return;
+    finderEl.style.display = "none";
+  }
+
   // Autosave tunables
   const AUTOSAVE_IDLE_MS = 1500;      // wait after edits
   const AUTOSAVE_FAILSAFE_MS = 20000; // if still dirty after this, force save
@@ -166,6 +324,48 @@
       .entry.dragging { opacity: 0.6; }
       .btn.danger { border-color: #ef4444 !important; color: #ef4444; }
       .btn.danger:hover { background:#fef2f2; }
+
+      /* Finder modal */
+      #finder {
+        position: fixed; inset: 0; z-index: 99997;
+        display: none; align-items: flex-start; justify-content: center;
+        background: rgba(17,24,39,.55);
+      }
+
+      #finder .card {
+        margin-top: 10vh;
+        width: min(800px, 92vw);
+        background: #fff; color: #111827;
+        border: 1px solid #e5e7eb; border-radius: 12px;
+        box-shadow: 0 24px 80px rgba(0,0,0,.30);
+        padding: 12px;
+        font-family: Inter, system-ui, sans-serif;
+      }
+
+      #finder .row { display: flex; gap: 8px; align-items: center; }
+      #finder input[type="text"] {
+        flex: 1; padding: 10px 12px; font-size: 14px;
+        border: 1px solid #e5e7eb; border-radius: 8px; outline: none;
+      }
+
+      #finder .scopes { display:flex; gap:8px; }
+      #finder .scope { font-size:12px; color:#6b7280; }
+      #finder .list { margin-top: 8px; max-height: 50vh; overflow:auto; border-top:1px solid #f3f4f6; }
+      #finder .item {
+        padding: 10px 12px; display:flex; justify-content:space-between; align-items:center;
+        cursor: pointer;
+      }
+
+      #finder .item:hover { background:#f9fafb; }
+      #finder .left { display:flex; gap:8px; align-items:center; }
+      #finder .badge {
+        font-size: 11px; color:#2563eb; border:1px solid #dbeafe; background:#eff6ff;
+        padding:2px 6px; border-radius:999px;
+      }
+
+      #finder .title { font-weight:600; }
+      #finder .meta { font-size:12px; color:#6b7280; }
+
     `;
     document.head.appendChild(style);
   })();
@@ -885,6 +1085,12 @@
       showProjectPicker();
     }
 
+    // Open Quick Finder (Ctrl/Cmd+F)  // ADDED
+    if (mod && e.key.toLowerCase() === "f") { // ADDED
+      e.preventDefault();                      // ADDED
+      showFinder("");                          // ADDED
+    }
+
     // Delete current entry (Ctrl/Cmd+Delete)
     if (mod && e.key === "Backspace") {
       const cur = state.entries.find(x => x.id === state.selectedId);
@@ -904,6 +1110,7 @@
       alert(`Workspace saved back to:\n${res.target}`);
     });
     ipcRenderer.on("menu:openPicker", () => { showProjectPicker(); });
+    ipcRenderer.on("menu:openFinder", () => { showFinder(""); });
     
     // Handle delete command from menu
     ipcRenderer.on("menu:delete", () => {
