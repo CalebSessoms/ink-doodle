@@ -53,6 +53,15 @@
       overId: null,
       overPosition: null, // "before" | "after"
     },
+
+    // NEW: UI preferences (theme/background)
+    uiPrefs: {
+      theme: "slate",      // "slate" | "light" | "dark" | "forest" | "rose"
+      bg: "aurora",        // "none" | "aurora" | "space" | "sunset" | "ocean"
+      bgOpacity: 0.2,      // 0..0.6
+      bgBlur: 2,           // px (0..8)
+      editorDim: false,    // dim editor panel for readability
+    },
   };
 
   // Will be set after we know workspacePath:
@@ -239,6 +248,7 @@
     tags: $("#tags"),
     synopsis: $("#synopsis"),
     body: $("#body"),
+    wordTarget: $("#word-target"),
     // Notes-only
     noteCategory: $("#note-category"),
     notePin: $("#note-pin"),
@@ -254,12 +264,33 @@
     sourceLinkLabel: $("#source-link-label"),
     synopsisLabel: $("#synopsis-label"),
     bodyLabel: $("#body-label"),
+    wordTargetWrapper: $("#word-target-wrapper"),
     // Status/footer
     wordCount: $("#word-count"),
     saveState: $("#save-state"),
     lastSaved: $("#last-saved"),
     saveBtn: $("#save-btn"),
     deleteBtn: $("#editor-delete-btn"),
+
+    // Word goal (bottom bar)
+    goalWrap: $("#goal-wrap"),
+    wordGoal: $("#word-goal"),
+    goalProgress: $("#goal-progress"),
+    goalFill: $("#goal-fill"),
+    goalPct: $("#goal-pct"),
+
+    // NEW: settings UI
+    settingsBtn: $("#settings-btn"),
+    settingsModal: $("#settings-modal"),
+    settingsClose: $("#settings-close"),
+    themeSelect: $("#theme-select"),
+    bgSelect: $("#bg-select"),
+    bgOpacity: $("#bg-opacity"),
+    bgBlur: $("#bg-blur"),
+    editorDim: $("#editor-dim"),
+    // NEW: buttons inside modal
+    settingsDone: $("#settings-done"),
+    settingsReset: $("#settings-reset"),
   };
 
   // ───────────────── Utilities ─────────────────
@@ -369,6 +400,41 @@
     `;
     document.head.appendChild(style);
   })();
+
+  // NEW: background host behind the app
+  function ensureAppBg() {
+    let bg = document.querySelector(".app-bg");
+    if (!bg) {
+      bg = document.createElement("div");
+      bg.className = "app-bg bg-aurora"; // default
+      document.body.appendChild(bg);
+    }
+    return bg;
+  }
+
+  // NEW: apply theme + background according to state.uiPrefs
+  function applyThemeAndBackground() {
+    const { theme, bg, bgOpacity, bgBlur, editorDim } = state.uiPrefs;
+
+    // body theme class
+    document.body.classList.remove(
+      "theme-slate","theme-light","theme-dark","theme-forest","theme-rose"
+    );
+    document.body.classList.add(`theme-${theme}`);
+
+    // bg host
+    const host = ensureAppBg();
+    host.classList.remove("bg-none","bg-aurora","bg-space","bg-sunset","bg-ocean");
+    host.classList.add(`bg-${bg}`);
+    host.style.setProperty("--bg-blur", `${bgBlur || 0}px`);
+    host.style.setProperty("--bg-opacity", `${bgOpacity ?? 0}`);
+
+    // dim editor (readability over images)
+    const editor = document.querySelector(".editor");
+    if (editor) {
+      editor.classList.toggle("dimmed", !!editorDim);
+    }
+  }
 
   // ───────────────── Project Picker Overlay ─────────────────
   let picker = null;
@@ -704,10 +770,17 @@
     if (el.tags) el.tags.value = "";
     if (el.synopsis) el.synopsis.value = "";
     if (el.body) el.body.value = "";
+    if (el.wordTarget) el.wordTarget.value = "";
     if (el.noteCategory) el.noteCategory.value = "Misc";
     if (el.notePin) el.notePin.checked = false;
     if (el.referenceType) el.referenceType.value = "Glossary";
     if (el.sourceLink) el.sourceLink.value = "";
+
+    // word goal UI
+    if (el.wordGoal) el.wordGoal.value = "";
+    if (el.goalWrap) el.goalWrap.style.display = "none";
+    if (el.goalProgress) el.goalProgress.style.display = "none";
+
     updateWordCount();
   }
 
@@ -723,15 +796,23 @@
     if (el.titleInput) el.titleInput.value = entry.title || "";
 
     if (entry.type === "chapter") {
-      show(el.statusWrapper); show(el.tagsWrapper); show(el.synopsisLabel); show(el.synopsis);
-      hide(el.noteCategoryWrapper); hide(el.notePinWrapper);
-      hide(el.referenceTypeWrapper); hide(el.sourceLinkLabel); hide(el.sourceLink);
-      if (el.synopsisLabel) el.synopsisLabel.textContent = "Synopsis";
-      if (el.status) { el.status.disabled = false; el.status.value = entry.status || "Draft"; }
-      if (el.tags) el.tags.value = (entry.tags || []).join(", ");
-      if (el.synopsis) el.synopsis.value = entry.synopsis || "";
-      if (el.body) el.body.value = entry.body || "";
+    show(el.statusWrapper); show(el.tagsWrapper); show(el.synopsisLabel); show(el.synopsis);
+    hide(el.noteCategoryWrapper); hide(el.notePinWrapper);
+    hide(el.referenceTypeWrapper); hide(el.sourceLinkLabel); hide(el.sourceLink);
+    if (el.synopsisLabel) el.synopsisLabel.textContent = "Synopsis";
+    if (el.status) { el.status.disabled = false; el.status.value = entry.status || "Draft"; }
+    if (el.tags) el.tags.value = (entry.tags || []).join(", ");
+    if (el.synopsis) el.synopsis.value = entry.synopsis || "";
+    if (el.body) el.body.value = entry.body || "";
+
+    // word goal UI (chapters only)
+    if (el.goalWrap) el.goalWrap.style.display = "";
+    if (el.goalProgress) el.goalProgress.style.display = "flex";
+    if (el.wordGoal) el.wordGoal.value = entry.word_goal ?? "";
     } else if (entry.type === "note") {
+    // hide goal UI for notes
+      if (el.goalWrap) el.goalWrap.style.display = "none";
+      if (el.goalProgress) el.goalProgress.style.display = "none";
       hide(el.statusWrapper); show(el.tagsWrapper); hide(el.synopsisLabel); hide(el.synopsis);
       show(el.noteCategoryWrapper); show(el.notePinWrapper);
       hide(el.referenceTypeWrapper); hide(el.sourceLinkLabel); hide(el.sourceLink);
@@ -741,6 +822,7 @@
       if (el.body) el.body.value = entry.body || "";
     } else if (entry.type === "reference") {
       hide(el.statusWrapper); show(el.tagsWrapper); show(el.synopsisLabel); show(el.synopsis);
+      hide(el.wordTargetWrapper);
       show(el.referenceTypeWrapper); show(el.sourceLinkLabel); show(el.sourceLink);
       hide(el.noteCategoryWrapper); hide(el.notePinWrapper);
       if (el.synopsisLabel) el.synopsisLabel.textContent = "Summary";
@@ -763,7 +845,7 @@
       id: uid(), type, title: defaultUntitled(type),
       updated_at: nowISO(), order_index, body: "", tags: []
     };
-    if (type === "chapter") { entry.status = "Draft"; entry.synopsis = ""; }
+    if (type === "chapter") { entry.status = "Draft"; entry.synopsis = ""; entry.word_target = 0; }
     else if (type === "note") { entry.category = "Misc"; entry.pinned = false; }
     else { entry.reference_type = "Glossary"; entry.summary = ""; entry.source_link = ""; }
 
@@ -790,14 +872,41 @@
 
   // ───────────────── Word Count ─────────────────
   function updateWordCount() {
-    const cur = state.entries.find(e => e.id === state.selectedId);
-    if (!el.wordCount) return;
-    if (!cur) { el.wordCount.textContent = "Words: 0"; return; }
-    if (cur.type !== "chapter") { el.wordCount.textContent = "Words: —"; return; }
-    const text = el.body?.value || "";
-    const words = text.trim() ? text.trim().split(/\s+/).length : 0;
-    el.wordCount.textContent = `Words: ${words}`;
+  const cur = state.entries.find(e => e.id === state.selectedId);
+  if (!el.wordCount) return;
+
+  if (!cur) {
+    el.wordCount.textContent = "Words: 0";
+    if (el.goalWrap) el.goalWrap.style.display = "none";
+    if (el.goalProgress) el.goalProgress.style.display = "none";
+    return;
   }
+
+  if (cur.type !== "chapter") {
+    el.wordCount.textContent = "Words: —";
+    if (el.goalWrap) el.goalWrap.style.display = "none";
+    if (el.goalProgress) el.goalProgress.style.display = "none";
+    return;
+  }
+
+  const text = el.body?.value || "";
+  const words = text.trim() ? text.trim().split(/\s+/).length : 0;
+  el.wordCount.textContent = `Words: ${words}`;
+
+  // goal/progress (chapters only)
+  const goalVal = (el.wordGoal && el.wordGoal.value !== "")
+    ? parseInt(el.wordGoal.value, 10)
+    : (cur.word_goal || 0);
+  const goal = Number.isFinite(goalVal) && goalVal > 0 ? goalVal : 0;
+
+  if (el.goalWrap) el.goalWrap.style.display = "";
+  if (el.goalProgress) el.goalProgress.style.display = "flex";
+
+  const pct = goal ? Math.min(100, Math.round((words / goal) * 100)) : 0;
+  if (el.goalFill) el.goalFill.style.width = `${pct}%`;
+  if (el.goalPct) el.goalPct.textContent = `${pct}%`;
+}
+
 
   // ───────────────── Save/Load (workspace) ─────────────────
   function parseTags(text) {
@@ -842,10 +951,15 @@
     if (cur) {
       cur.title = el.titleInput?.value || cur.title;
       if (cur.type === "chapter") {
-        cur.status = el.status?.value || "Draft";
-        cur.tags = parseTags(el.tags?.value);
-        cur.synopsis = el.synopsis?.value || "";
-        cur.body = el.body?.value || "";
+      cur.status = el.status?.value || "Draft";
+      cur.tags = parseTags(el.tags?.value);
+      cur.synopsis = el.synopsis?.value || "";
+      cur.body = el.body?.value || "";
+      // persist word goal
+      if (el.wordGoal) {
+        const g = parseInt(el.wordGoal.value, 10);
+        cur.word_goal = Number.isFinite(g) && g > 0 ? g : 0;
+      }
       } else if (cur.type === "note") {
         cur.tags = parseTags(el.tags?.value);
         cur.category = el.noteCategory?.value || "Misc";
@@ -865,7 +979,17 @@
     return {
       project: { name: state.projectName, saved_at: nowISO() },
       entries: state.entries.map(stripUndefined),
-      ui: { activeTab: state.activeTab, selectedId: state.selectedId, counters: state.counters },
+      ui: {
+        activeTab: state.activeTab,
+        selectedId: state.selectedId,
+        counters: state.counters,
+        // NEW: persist UI prefs
+        theme: state.uiPrefs.theme,
+        bg: state.uiPrefs.bg,
+        bgOpacity: state.uiPrefs.bgOpacity,
+        bgBlur: state.uiPrefs.bgBlur,
+        editorDim: state.uiPrefs.editorDim,
+      },
       version: 1,
     };
   }
@@ -917,6 +1041,14 @@
         t.classList.toggle("active", active);
         t.setAttribute("aria-selected", active ? "true" : "false");
       });
+
+      // NEW: restore UI prefs (with defaults if missing)
+      state.uiPrefs.theme = data?.ui?.theme || state.uiPrefs.theme;
+      state.uiPrefs.bg = data?.ui?.bg || state.uiPrefs.bg;
+      state.uiPrefs.bgOpacity = (typeof data?.ui?.bgOpacity === "number") ? data.ui.bgOpacity : state.uiPrefs.bgOpacity;
+      state.uiPrefs.bgBlur = (typeof data?.ui?.bgBlur === "number") ? data.ui.bgBlur : state.uiPrefs.bgBlur;
+      state.uiPrefs.editorDim = !!(data?.ui?.editorDim ?? state.uiPrefs.editorDim);
+      applyThemeAndBackground();
 
       const sel = state.entries.find(e=>e.id===state.selectedId) || visibleEntries()[0];
       if (sel) { state.selectedId = sel.id; populateEditor(sel); }
@@ -1006,6 +1138,14 @@
     updateWordCount();
     touchSave();
   });
+  // Chapter-only: word target
+  el.wordTarget?.addEventListener("input", () => {
+    const e = state.entries.find(x => x.id === state.selectedId);
+    if (!e || e.type !== "chapter") return;
+    e.word_target = parseInt(el.wordTarget.value || 0, 10) || 0;
+    updateWordCount();
+    touchSave();
+  });
   // Notes-only
   el.noteCategory?.addEventListener("change", () => {
     const e = state.entries.find(x => x.id === state.selectedId);
@@ -1021,11 +1161,22 @@
   });
   // References-only
   el.referenceType?.addEventListener("change", () => {
-    const e = state.entries.find(x => x.id === state.selectedId);
-    if (!e || e.type !== "reference") return;
-    e.reference_type = el.referenceType.value;
-    touchSave();
-  });
+  const e = state.entries.find(x => x.id === state.selectedId);
+  if (!e || e.type !== "reference") return;
+  e.reference_type = el.referenceType.value;
+  touchSave();
+});
+
+// Word goal (chapters only)
+el.wordGoal?.addEventListener("input", () => {
+  const e = state.entries.find(x => x.id === state.selectedId);
+  if (!e || e.type !== "chapter") return;
+  const g = parseInt(el.wordGoal.value, 10);
+  e.word_goal = Number.isFinite(g) && g > 0 ? g : 0;
+  updateWordCount();  // refresh progress bar
+  touchSave();
+});
+
   el.sourceLink?.addEventListener("input", () => {
     const e = state.entries.find(x => x.id === state.selectedId);
     if (!e || e.type !== "reference") return;
@@ -1050,6 +1201,85 @@
   // Tabs
   el.tabs?.forEach(tab => {
     tab.addEventListener("click", () => switchTab(tab.dataset.tab));
+  });
+
+  // NEW: settings modal open/close
+  function openSettings() {
+    el.settingsModal?.classList.remove("hidden");
+    // preload controls from state
+    if (el.themeSelect) el.themeSelect.value = state.uiPrefs.theme;
+    if (el.bgSelect) el.bgSelect.value = state.uiPrefs.bg;
+    if (el.bgOpacity) el.bgOpacity.value = String(state.uiPrefs.bgOpacity ?? 0.2);
+    if (el.bgBlur) el.bgBlur.value = String(state.uiPrefs.bgBlur ?? 2);
+    if (el.editorDim) el.editorDim.checked = !!state.uiPrefs.editorDim;
+  }
+  function closeSettings() {
+    el.settingsModal?.classList.add("hidden");
+  }
+  function isSettingsOpen(){ return !!el.settingsModal && !el.settingsModal.classList.contains("hidden"); }
+
+  el.settingsBtn?.addEventListener("click", openSettings);
+  el.settingsClose?.addEventListener("click", closeSettings);
+  el.settingsModal?.addEventListener("click", (e) => {
+    if (e.target === el.settingsModal) closeSettings();
+  });
+  // NEW: Done (Esc) button closes modal
+  el.settingsDone?.addEventListener("click", () => {
+    closeSettings();
+  });
+
+  // NEW: bind controls → state → apply → autosave
+   el.themeSelect?.addEventListener("change", () => {
+    state.uiPrefs.theme = el.themeSelect.value;
+    applyThemeAndBackground();
+    touchSave();
+  });
+  // NEW: extra safety for some UIs that emit input instead of change
+  el.themeSelect?.addEventListener("input", () => {
+    state.uiPrefs.theme = el.themeSelect.value;
+    applyThemeAndBackground();
+    touchSave();
+  });
+  el.bgSelect?.addEventListener("change", () => {
+    state.uiPrefs.bg = el.bgSelect.value;
+    applyThemeAndBackground();
+    touchSave();
+  });
+  el.bgOpacity?.addEventListener("input", () => {
+    const v = parseFloat(el.bgOpacity.value);
+    state.uiPrefs.bgOpacity = Number.isFinite(v) ? Math.max(0, Math.min(0.6, v)) : 0.2;
+    applyThemeAndBackground();
+    touchSave();
+  });
+  el.bgBlur?.addEventListener("input", () => {
+    const v = parseInt(el.bgBlur.value, 10);
+    state.uiPrefs.bgBlur = Number.isFinite(v) ? Math.max(0, Math.min(8, v)) : 2;
+    applyThemeAndBackground();
+    touchSave();
+  });
+  el.editorDim?.addEventListener("change", () => {
+    state.uiPrefs.editorDim = !!el.editorDim.checked;
+    applyThemeAndBackground();
+    touchSave();
+  });
+
+  // NEW: Reset to default (Slate + Aurora, 0.2 opacity, 2px blur, dim off)
+  el.settingsReset?.addEventListener("click", () => {
+    state.uiPrefs.theme = "slate";
+    state.uiPrefs.bg = "aurora";
+    state.uiPrefs.bgOpacity = 0.2;
+    state.uiPrefs.bgBlur = 2;
+    state.uiPrefs.editorDim = false;
+
+    // reflect in controls
+    if (el.themeSelect) el.themeSelect.value = state.uiPrefs.theme;
+    if (el.bgSelect) el.bgSelect.value = state.uiPrefs.bg;
+    if (el.bgOpacity) el.bgOpacity.value = String(state.uiPrefs.bgOpacity);
+    if (el.bgBlur) el.bgBlur.value = String(state.uiPrefs.bgBlur);
+    if (el.editorDim) el.editorDim.checked = state.uiPrefs.editorDim;
+
+    applyThemeAndBackground();
+    touchSave();
   });
 
   // Manual Save + Save Back shortcuts + Picker shortcut
@@ -1089,6 +1319,30 @@
     if (mod && e.key.toLowerCase() === "f") { // ADDED
       e.preventDefault();                      // ADDED
       showFinder("");                          // ADDED
+    }
+
+    // Dynamic ESC (B): close settings → finder → picker
+    if (e.key === "Escape") {
+      // settings first
+      if (el.settingsModal && !el.settingsModal.classList.contains("hidden")) {
+        e.preventDefault();
+        el.settingsModal.classList.add("hidden");
+        return;
+      }
+      // finder
+      const f = document.getElementById("finder");
+      if (f && f.style.display === "flex") {
+        e.preventDefault();
+        hideFinder();
+        return;
+      }
+      // project picker
+      const p = document.getElementById("project-picker");
+      if (p && p.style.display === "flex") {
+        e.preventDefault();
+        hideProjectPicker();
+        return;
+      }
     }
 
     // Delete current entry (Ctrl/Cmd+Delete)
@@ -1147,6 +1401,11 @@
 
     await appLoadFromDisk();
     renderList();
+
+    // NEW: ensure BG node exists, then apply theme/bg
+    ensureAppBg();
+    applyThemeAndBackground();
+
     startFailsafeTimer();
     dbg(`Workspace ready: ${SAVE_FILE}`);
   })();

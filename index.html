@@ -16,10 +16,10 @@
         <span id="project-name" contenteditable="true" spellcheck="false">Untitled Project</span>
       </div>
       <div class="topbar-right">
-        <span id="last-saved">Last saved • —</span>
-        <button class="btn primary" id="save-btn" type="button">Save ▾</button>
+        <button class="icon-btn" id="settings-btn" type="button" aria-label="Settings">⚙</button>
       </div>
     </header>
+
 
     <!-- Main Content: Sidebar + Editor -->
     <main class="main">
@@ -108,14 +108,23 @@
         <textarea id="synopsis" class="synopsis" placeholder="One-paragraph summary..." aria-label="Synopsis"></textarea>
 
         <!-- References-only: Source Link -->
-        <label class="section-label hidden" id="source-link-label" for="source-link">Source Link</label>
-        <input id="source-link" class="hidden" placeholder="https://example.com/resource" aria-label="Source Link"/>
-
         <label class="section-label" id="body-label" for="body">Body</label>
         <textarea id="body" class="body" placeholder="Start writing..." aria-label="Body"></textarea>
 
         <div class="bottom-bar" role="status">
-          <div class="left" id="word-count">Words: 0</div>
+          <div class="left-stats">
+            <span id="word-count">Words: 0</span>
+            <span class="dot">•</span>
+            <label class="goal-wrap" id="goal-wrap" title="Word Goal (chapters only)">
+              Word Goal
+              <input id="word-goal" type="number" min="0" step="50" inputmode="numeric" />
+            </label>
+            <div class="goal-progress" id="goal-progress" aria-hidden="true">
+              <div class="bar"><div class="fill" id="goal-fill" style="width:0%"></div></div>
+              <div class="pct" id="goal-pct">0%</div>
+            </div>
+          </div>
+
           <div class="right" id="save-state">Unsaved • Ctrl+S</div>
         </div>
       </section>
@@ -131,6 +140,66 @@
         <button class="btn primary" data-new="chapter" type="button">+ New Chapter</button>
         <button class="btn" data-new="note" type="button">+ New Note</button>
         <button class="btn" data-new="reference" type="button">+ New Reference</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings Modal -->
+  <div id="settings-modal" class="settings-modal hidden" role="dialog" aria-modal="true" aria-label="Settings">
+    <div class="settings-card">
+      <div class="settings-head">
+        <h3>Settings</h3>
+        <button class="icon-btn" id="settings-close" aria-label="Close">✕</button>
+      </div>
+
+      <div class="settings-section">
+        <h4>Theme</h4>
+        <div class="row">
+          <label>Palette
+            <select id="theme-palette">
+              <option value="slate" selected>Slate (default)</option>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+              <option value="forest">Forest</option>
+              <option value="rose">Rose</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h4>Background</h4>
+        <div class="row">
+          <label>Image
+            <select id="theme-bg">
+              <option value="none" selected>None</option>
+              <option value="aurora">Aurora Gradient</option>
+              <option value="space">Deep Space</option>
+              <option value="sunset">Sunset Hills</option>
+              <option value="ocean">Ocean Mist</option>
+            </select>
+          </label>
+        </div>
+        <div class="row">
+          <label>Overlay Opacity
+            <input id="bg-opacity" type="range" min="0" max="60" step="5" value="20" />
+          </label>
+          <label>Blur
+            <input id="bg-blur" type="range" min="0" max="8" step="1" value="2" />
+          </label>
+        </div>
+        <div class="row">
+          <label class="checkbox">
+            <input id="dim-editor" type="checkbox" checked />
+            Dim editor background for readability
+          </label>
+        </div>
+      </div>
+
+      <div class="settings-foot">
+        <button class="btn" id="settings-reset">Reset to Defaults</button>
+        <div class="spacer"></div>
+        <button class="btn primary" id="settings-done">Done (Esc)</button>
       </div>
     </div>
   </div>
