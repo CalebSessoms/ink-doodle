@@ -4,14 +4,25 @@
 (() => {
   "use strict";
 
-  // ───────────────── Debug helpers ─────────────────
-  function dbg(msg) {
-    console.log("[debug]", msg);
-    const b = document.getElementById("debug-banner");
-    if (b) b.textContent = `[debug] ${msg}`;
-  }
-  (function banner() {
-    const b = document.createElement("div");
+// ───────────────── Debug helpers ─────────────────
+let LOG_FILE = null;
+const _dbgBuf = [];                // buffer while we don't know workspace
+function _dbgAppendToFile(line) {
+  try {
+    if (!fs || !path || !LOG_FILE) return _dbgBuf.push(line);
+    fs.appendFileSync(LOG_FILE, line + "\n", "utf8");
+  } catch (_) { /* ignore */ }
+}
+function dbg(msg) {
+  const stamp = new Date().toISOString();
+  const line  = `[${stamp}] ${String(msg)}`;
+  console.log("[debug]", msg);
+  _dbgAppendToFile(line);
+  const b = document.getElementById("debug-banner");
+  if (b) b.textContent = `[debug] ${msg}`;
+}
+(function banner() {
+  const b = document.createElement("div");
     b.id = "debug-banner";
     b.style.cssText =
       "position:fixed;right:8px;bottom:8px;z-index:99999;background:#111827;color:#e5e7eb;padding:8px 10px;border-radius:8px;font:12px/1.2 -apple-system,Segoe UI,Roboto,Inter,sans-serif;opacity:.9;max-width:520px;box-shadow:0 6px 20px rgba(0,0,0,.25)";
@@ -56,6 +67,7 @@
 
     // NEW: UI preferences (theme/background)
     uiPrefs: {
+      mode: "theme",       // NEW: "theme" | "background"
       theme: "slate",      // "slate" | "light" | "dark" | "forest" | "rose"
       bg: "aurora",        // "none" | "aurora" | "space" | "sunset" | "ocean"
       bgOpacity: 0.2,      // 0..0.6
@@ -283,11 +295,14 @@
     settingsBtn: $("#settings-btn"),
     settingsModal: $("#settings-modal"),
     settingsClose: $("#settings-close"),
-    themeSelect: $("#theme-select"),
-    bgSelect: $("#bg-select"),
+    // REPURPOSE: use theme-select as the unified “appearance” select
+    appearanceSelect: $("#theme-select"),
+    // keep background sliders
     bgOpacity: $("#bg-opacity"),
     bgBlur: $("#bg-blur"),
     editorDim: $("#editor-dim"),
+    // NEW: dynamically injected mode radios container
+    appearanceModeHost: $("#appearance-mode"),
     // NEW: buttons inside modal
     settingsDone: $("#settings-done"),
     settingsReset: $("#settings-reset"),
@@ -401,7 +416,7 @@
     document.head.appendChild(style);
   })();
 
-  // NEW: background host behind the app
+    // NEW: background host behind the app
   function ensureAppBg() {
     let bg = document.querySelector(".app-bg");
     if (!bg) {
@@ -412,29 +427,42 @@
     return bg;
   }
 
-  // NEW: apply theme + background according to state.uiPrefs
+  // NEW: apply theme + background according to state.uiPrefs (now honors mode)
   function applyThemeAndBackground() {
-    const { theme, bg, bgOpacity, bgBlur, editorDim } = state.uiPrefs;
+    const { mode, theme, bg, bgOpacity, bgBlur, editorDim } = state.uiPrefs;
 
-    // body theme class
-    document.body.classList.remove(
-      "theme-slate","theme-light","theme-dark","theme-forest","theme-rose"
-    );
-    document.body.classList.add(`theme-${theme}`);
-
-    // bg host
     const host = ensureAppBg();
-    host.classList.remove("bg-none","bg-aurora","bg-space","bg-sunset","bg-ocean");
-    host.classList.add(`bg-${bg}`);
-    host.style.setProperty("--bg-blur", `${bgBlur || 0}px`);
-    host.style.setProperty("--bg-opacity", `${bgOpacity ?? 0}`);
+    const themeClasses = ["theme-slate","theme-light","theme-dark","theme-forest","theme-rose"];
+    const bgClasses = ["bg-none","bg-aurora","bg-space","bg-sunset","bg-ocean"];
+
+    // Clear current classes
+    document.body.classList.remove(...themeClasses);
+    host.classList.remove(...bgClasses);
+
+    if (mode === "background") {
+      // Background-driven visuals
+      host.classList.add(`bg-${bg || "aurora"}`);
+      host.style.setProperty("--bg-blur", `${bgBlur || 0}px`);
+      host.style.setProperty("--bg-opacity", `${bgOpacity ?? 0}`);
+      // keep body neutral (no theme), or apply a minimal fallback if you prefer
+    } else {
+      // Theme-driven visuals
+      document.body.classList.add(`theme-${theme || "slate"}`);
+      // neutralize bg layer
+      host.classList.add("bg-none");
+      host.style.setProperty("--bg-blur", `0px`);
+      host.style.setProperty("--bg-opacity", `0`);
+    }
 
     // dim editor (readability over images)
     const editor = document.querySelector(".editor");
-    if (editor) {
-      editor.classList.toggle("dimmed", !!editorDim);
-    }
+    if (editor) editor.classList.toggle("dimmed", !!editorDim);
+
+    // Hide legacy #bg-select if it exists (we now use a single select)
+    const legacyBg = document.getElementById("bg-select");
+    if (legacyBg) legacyBg.closest(".settings-section")?.classList.add("hidden");
   }
+
 
   // ───────────────── Project Picker Overlay ─────────────────
   let picker = null;
@@ -983,7 +1011,8 @@
         activeTab: state.activeTab,
         selectedId: state.selectedId,
         counters: state.counters,
-        // NEW: persist UI prefs
+        // persist UI prefs (including mode)
+        mode: state.uiPrefs.mode,
         theme: state.uiPrefs.theme,
         bg: state.uiPrefs.bg,
         bgOpacity: state.uiPrefs.bgOpacity,
@@ -1035,6 +1064,15 @@
       state.selectedId = ui.selectedId || (visibleEntries()[0]?.id ?? null);
       state.counters = ui.counters || state.counters;
       if (!ui.counters) deriveCountersIfMissing();
+
+      // restore UI prefs with defaults
+      state.uiPrefs.mode = ui.mode || state.uiPrefs.mode;
+      state.uiPrefs.theme = ui.theme || state.uiPrefs.theme;
+      state.uiPrefs.bg = ui.bg || state.uiPrefs.bg;
+      state.uiPrefs.bgOpacity = (typeof ui.bgOpacity === "number") ? ui.bgOpacity : state.uiPrefs.bgOpacity;
+      state.uiPrefs.bgBlur = (typeof ui.bgBlur === "number") ? ui.bgBlur : state.uiPrefs.bgBlur;
+      state.uiPrefs.editorDim = !!(ui.editorDim ?? state.uiPrefs.editorDim);
+      applyThemeAndBackground();
 
       el.tabs?.forEach(t => {
         const active = t.dataset.tab === state.activeTab;
@@ -1096,8 +1134,12 @@
     if (document.visibilityState === "hidden" && state.dirty) saveToDisk();
   });
   window.addEventListener("beforeunload", () => {
-    if (state.dirty) try { saveToDisk(); } catch {}
-  });
+  if (state.dirty) try { saveToDisk(); } catch {}
+});
+// NEW: pipe runtime errors into debug.log as well
+window.addEventListener("error", (e) => _dbgAppendToFile(`[${new Date().toISOString()}] window.error: ${e.message}`));
+window.addEventListener("unhandledrejection", (e) => _dbgAppendToFile(`[${new Date().toISOString()}] unhandledrejection: ${String(e.reason)}`));
+
 
   // ───────────────── Wiring ─────────────────
   el.projectName?.addEventListener("input", () => {
@@ -1205,6 +1247,7 @@ el.wordGoal?.addEventListener("input", () => {
 
   // NEW: settings modal open/close
   function openSettings() {
+    dbg("settings: open");
     el.settingsModal?.classList.remove("hidden");
     // preload controls from state
     if (el.themeSelect) el.themeSelect.value = state.uiPrefs.theme;
@@ -1214,6 +1257,7 @@ el.wordGoal?.addEventListener("input", () => {
     if (el.editorDim) el.editorDim.checked = !!state.uiPrefs.editorDim;
   }
   function closeSettings() {
+    dbg("settings: close");
     el.settingsModal?.classList.add("hidden");
   }
   function isSettingsOpen(){ return !!el.settingsModal && !el.settingsModal.classList.contains("hidden"); }
@@ -1228,43 +1272,115 @@ el.wordGoal?.addEventListener("input", () => {
     closeSettings();
   });
 
-  // NEW: bind controls → state → apply → autosave
-   el.themeSelect?.addEventListener("change", () => {
-    state.uiPrefs.theme = el.themeSelect.value;
+  // NEW: ensure a mode toggle row exists (radio buttons)
+  function ensureAppearanceModeUI() {
+    if (document.getElementById("mode-theme")) return; // already injected
+    const head = document.querySelector(".settings-head");
+    if (!head) return;
+    const wrap = document.createElement("div");
+    wrap.id = "appearance-mode";
+    wrap.style.display = "flex";
+    wrap.style.alignItems = "center";
+    wrap.style.gap = "12px";
+    wrap.innerHTML = `
+      <label style="display:flex;align-items:center;gap:6px;">
+        <input type="radio" name="appearance-mode" id="mode-theme" value="theme"> Theme
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;">
+        <input type="radio" name="appearance-mode" id="mode-background" value="background"> Background
+      </label>
+    `;
+    head.appendChild(wrap);
+  }
+
+  // unified select: populate options based on current mode
+  function populateAppearanceSelect() {
+    const select = el.appearanceSelect;
+    if (!select) return;
+    select.innerHTML = "";
+    if (state.uiPrefs.mode === "background") {
+      [["none","None"],["aurora","Aurora"],["space","Space"],["sunset","Sunset"],["ocean","Ocean"]]
+        .forEach(([v,label]) => {
+          const opt = document.createElement("option");
+          opt.value = v; opt.textContent = label; select.appendChild(opt);
+        });
+      select.value = state.uiPrefs.bg || "aurora";
+      select.setAttribute("data-kind","bg");
+    } else {
+      [["slate","Slate"],["light","Light"],["dark","Dark"],["forest","Forest"],["rose","Rose"]]
+        .forEach(([v,label]) => {
+          const opt = document.createElement("option");
+          opt.value = v; opt.textContent = label; select.appendChild(opt);
+        });
+      select.value = state.uiPrefs.theme || "slate";
+      select.setAttribute("data-kind","theme");
+    }
+  }
+
+  // open settings: inject radios, set checked state, populate single select, and sync sliders
+  function openSettings() {
+    el.settingsModal?.classList.remove("hidden");
+    ensureAppearanceModeUI();
+    const rTheme = document.getElementById("mode-theme");
+    const rBg = document.getElementById("mode-background");
+    if (rTheme && rBg) {
+      rTheme.checked = state.uiPrefs.mode !== "background";
+      rBg.checked = state.uiPrefs.mode === "background";
+      rTheme.onchange = () => { state.uiPrefs.mode = "theme"; populateAppearanceSelect(); applyThemeAndBackground(); touchSave(); };
+      rBg.onchange = () => { state.uiPrefs.mode = "background"; populateAppearanceSelect(); applyThemeAndBackground(); touchSave(); };
+    }
+    populateAppearanceSelect();
+    if (el.bgOpacity) el.bgOpacity.value = String(state.uiPrefs.bgOpacity ?? 0.2);
+    if (el.bgBlur) el.bgBlur.value = String(state.uiPrefs.bgBlur ?? 2);
+    if (el.editorDim) el.editorDim.checked = !!state.uiPrefs.editorDim;
+  }
+
+  // unified select → updates either theme or background based on data-kind
+  el.appearanceSelect?.addEventListener("change", () => {
+    const kind = el.appearanceSelect.getAttribute("data-kind") || "theme";
+    if (kind === "bg") state.uiPrefs.bg = el.appearanceSelect.value;
+    else state.uiPrefs.theme = el.appearanceSelect.value;
     applyThemeAndBackground();
     touchSave();
   });
   // NEW: extra safety for some UIs that emit input instead of change
   el.themeSelect?.addEventListener("input", () => {
     state.uiPrefs.theme = el.themeSelect.value;
+    dbg(`settings: theme(input) -> ${state.uiPrefs.theme}`);
     applyThemeAndBackground();
     touchSave();
   });
   el.bgSelect?.addEventListener("change", () => {
     state.uiPrefs.bg = el.bgSelect.value;
+    dbg(`settings: background -> ${state.uiPrefs.bg}`);
     applyThemeAndBackground();
     touchSave();
   });
   el.bgOpacity?.addEventListener("input", () => {
     const v = parseFloat(el.bgOpacity.value);
     state.uiPrefs.bgOpacity = Number.isFinite(v) ? Math.max(0, Math.min(0.6, v)) : 0.2;
+    dbg(`settings: bgOpacity -> ${state.uiPrefs.bgOpacity}`);
     applyThemeAndBackground();
     touchSave();
   });
   el.bgBlur?.addEventListener("input", () => {
     const v = parseInt(el.bgBlur.value, 10);
     state.uiPrefs.bgBlur = Number.isFinite(v) ? Math.max(0, Math.min(8, v)) : 2;
+    dbg(`settings: bgBlur -> ${state.uiPrefs.bgBlur}`);
     applyThemeAndBackground();
     touchSave();
   });
-  el.editorDim?.addEventListener("change", () => {
+   el.editorDim?.addEventListener("change", () => {
     state.uiPrefs.editorDim = !!el.editorDim.checked;
+    dbg(`settings: editorDim -> ${state.uiPrefs.editorDim}`);
     applyThemeAndBackground();
     touchSave();
   });
 
-  // NEW: Reset to default (Slate + Aurora, 0.2 opacity, 2px blur, dim off)
+
+ // NEW: Reset to default (Slate + Aurora, 0.2 opacity, 2px blur, dim off)
   el.settingsReset?.addEventListener("click", () => {
+    dbg("settings: reset to defaults");
     state.uiPrefs.theme = "slate";
     state.uiPrefs.bg = "aurora";
     state.uiPrefs.bgOpacity = 0.2;
@@ -1377,6 +1493,10 @@ el.wordGoal?.addEventListener("input", () => {
   (async function init() {
     if (el.empty) { el.empty.classList.add("hidden"); el.empty.style.display = "none"; }
 
+    // APPLY VISUALS ON LAUNCH (before any project load)
+    ensureAppBg();
+    applyThemeAndBackground();
+
     if (!ipcRenderer) {
       dbg("No ipcRenderer; cannot manage projects. Proceeding without project picker.");
       return;
@@ -1390,14 +1510,22 @@ el.wordGoal?.addEventListener("input", () => {
     }
 
     state.workspacePath = ap.activePath || null;
-    state.currentProjectDir = ap.currentProjectDir || null;
-    SAVE_FILE = (state.workspacePath && path) ? path.join(state.workspacePath, "data", "project.json") : null;
+state.currentProjectDir = ap.currentProjectDir || null;
+SAVE_FILE = (state.workspacePath && path) ? path.join(state.workspacePath, "data", "project.json") : null;
+// NEW: establish a per-workspace debug log and flush any buffered lines
+if (state.workspacePath && path) {
+  LOG_FILE = path.join(state.workspacePath, "debug.log");
+  try { if (!fs.existsSync(state.workspacePath)) fs.mkdirSync(state.workspacePath, { recursive: true }); } catch {}
+  if (_dbgBuf.length) {
+    try { fs.appendFileSync(LOG_FILE, _dbgBuf.join("\n") + "\n", "utf8"); _dbgBuf.length = 0; } catch {}
+  }
+}
 
-    if (!state.currentProjectDir || !state.workspacePath) {
-      ensureProjectPicker(); showProjectPicker();
-      dbg("No project loaded; picker shown.");
-      return;
-    }
+if (!state.currentProjectDir || !state.workspacePath) {
+  ensureProjectPicker(); showProjectPicker();
+  dbg("No project loaded; picker shown.");
+  return;
+}
 
     await appLoadFromDisk();
     renderList();

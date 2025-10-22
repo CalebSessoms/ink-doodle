@@ -17,10 +17,14 @@
 
 /* ─────────── Themes (override CSS vars on <body>) ─────────── */
 body.theme-slate {
-  --bg: #ffffff; --bg-soft: #fafafa;
-  --fg: #111827; --muted: #6b7280;
-  --card: #f7f7f7; --border: #e5e7eb;
-  --accent: #2563eb; --accentH: #1d4ed8;
+  --bg: #2f3640;        /* upper background color */
+  --bg-soft: #3a414b;   /* lower background blend in color */
+  --fg: #CDCED0;        /* text for left bar */
+  --muted: #a4b0be;     /* some titles and misc */
+  --card: #404854;      /* background for some text fields and buttons */
+  --border: #59616c;    /* border or outlines */
+  --accent: #718093;    /* slate-blue accent */
+  --accentH: #a0aec0;   /* lighter hover accent */
 }
 
 body.theme-light {
@@ -77,7 +81,7 @@ body {
 .app-bg {
   position: fixed;
   inset: 0;
-  z-index: 0;               /* was -1 */
+  z-index: -1;              /* behind the app */
   pointer-events: none;
   background-size: cover;
   background-position: center;
@@ -139,7 +143,6 @@ body {
   padding: 0 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
-  /* NEW */
   box-shadow: var(--shadow-1);
 }
 
@@ -223,7 +226,7 @@ body {
 .tab.active {
   color: var(--fg);
   border-color: var(--accent);
-  background: #eef2ff;               /* NEW */
+  background: color-mix(in oklab, var(--accent) 18%, var(--bg)); /* themed */
 }
 
 
@@ -253,8 +256,8 @@ body {
 
 .entry.selected {
   border-left: 4px solid var(--accent);
-  background: #f3f6ff;
-  box-shadow: var(--shadow-1);                  /* NEW */
+  background: color-mix(in oklab, var(--accent) 10%, var(--bg)); /* themed */
+  box-shadow: var(--shadow-1);
 }
 
 
@@ -362,8 +365,9 @@ body {
   padding: 6px 8px;
   border-radius: 6px;
   outline: none;
-  background: white;
+  background: var(--card);   /* themed surface */
   min-width: 140px;
+  /* NOTE: color intentionally not set here so theme-specific overrides (e.g., Slate) win */
 }
 
 /* dark theme input/textarea contrast */
@@ -375,6 +379,16 @@ body.theme-dark .body {
   background: #0f172a;
   color: #e5e7eb;
   border-color: #1f2937;
+}
+
+/* Slate theme: dropdowns & title use --fg; text areas use #CDCED0 */
+body.theme-slate .title-input,
+body.theme-slate .meta-row select {
+  color: var(--fg);
+}
+body.theme-slate .synopsis,
+body.theme-slate .body {
+  color: #CDCED0;
 }
 
 /* Word target (in meta-row) */
@@ -394,10 +408,10 @@ body.theme-dark .body {
   min-height: 120px;
   padding: 10px;
   border: 1px solid var(--border);
-  border-radius: var(--radius);   /* was 8px */
+  border-radius: var(--radius);
   resize: vertical;
-  background: #fff;               /* NEW */
-  box-shadow: var(--shadow-1);    /* NEW */
+  background: var(--card);        /* themed surface */
+  box-shadow: var(--shadow-1);
 }
 
 .body {
@@ -405,13 +419,13 @@ body.theme-dark .body {
   min-height: 260px;
   padding: 12px;
   border: 1px solid var(--border);
-  border-radius: var(--radius);   /* was 8px */
+  border-radius: var(--radius);
   resize: vertical;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 14px;
   line-height: 1.6;
-  background: #fff;               /* NEW */
-  box-shadow: var(--shadow-1);    /* NEW */
+  background: var(--card);        /* themed surface */
+  box-shadow: var(--shadow-1);
 }
 
 /* NEW unified focus ring */
@@ -434,17 +448,19 @@ body.theme-dark .body {
 
 /* Bottom / status bar */
 .bottom-bar {
-  height: 32px;                              /* was 28px */
+  height: 32px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   color: var(--muted);
   gap: 12px;
-  border-top: 1px solid var(--border);       /* NEW */
-  background: rgba(255,255,255,.8);          /* NEW */
-  backdrop-filter: saturate(140%) blur(2px); /* NEW */
-  padding: 0 8px;                            /* NEW */
+  border-top: 1px solid var(--border);
+  background: color-mix(in oklab, var(--bg) 88%, white 12%); /* themed glass */
+  backdrop-filter: saturate(140%) blur(2px);
+  padding: 0 8px;
 }
+
+
 
 .bottom-bar .left-stats {
   display: flex;
@@ -465,7 +481,7 @@ body.theme-dark .body {
   padding: 4px 6px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: #fff;
+  background: var(--card);          /* themed */
   color: var(--fg);
 }
 
@@ -479,9 +495,9 @@ body.theme-dark .body {
 }
 
 .goal-progress .bar {
-  width: 480px;                 /* was 420px */
-  height: 12px;                 /* was 10px */
-  background: #f3f4f6;
+  width: 480px;
+  height: 12px;
+  background: var(--card);              /* themed */
   border: 1px solid var(--border);
   border-radius: 999px;
   overflow: hidden;
@@ -507,15 +523,15 @@ body.theme-dark .body {
 .btn {
   padding: 6px 10px;
   border: 1px solid var(--border);
-  background: #fff;
+  background: var(--card);                     /* themed */
   border-radius: 8px;
   cursor: pointer;
   transition: background .15s, box-shadow .15s, transform .05s;
-  box-shadow: var(--shadow-1);                 /* NEW */
+  box-shadow: var(--shadow-1);
 }
 
 .btn:hover {
-  background: #f9fafb;
+  background: color-mix(in oklab, var(--card) 88%, white 12%); /* themed hover */
   box-shadow: 0 4px 14px rgba(0,0,0,.06);      /* NEW */
 }
 
@@ -538,10 +554,10 @@ body.theme-dark .body {
 .btn.danger {
   border-color: var(--danger);
   color: var(--danger);
-  background: #fff;
+  background: var(--card);                 /* themed */
 }
 .btn.danger:hover {
-  background: #fff5f5;
+  background: color-mix(in oklab, var(--card) 88%, white 12%); /* themed hover */
 }
 
 /* NEW: icon button for gear / close */
@@ -550,13 +566,13 @@ body.theme-dark .body {
   display: inline-grid;
   place-items: center;
   border: 1px solid var(--border);
-  background: #fff; color: var(--fg);
+  background: var(--card); color: var(--fg);   /* themed */
   border-radius: 8px;
   cursor: pointer;
   box-shadow: var(--shadow-1);
   transition: background .15s;
 }
-.icon-btn:hover { background: #f9fafb; }
+.icon-btn:hover { background: color-mix(in oklab, var(--card) 88%, white 12%); } /* themed hover */
 
 /* NEW: settings modal */
 .settings-modal {
@@ -569,7 +585,7 @@ body.theme-dark .body {
 .settings-card {
   margin-top: 10vh;
   width: min(720px, 92vw);
-  background: #fff; color: var(--fg);
+  background: var(--card); color: var(--fg);   /* themed */
   border: 1px solid var(--border);
   border-radius: 12px;
   box-shadow: 0 24px 80px rgba(0,0,0,.30);
@@ -588,11 +604,10 @@ body.theme-dark .body {
 
 .settings-section label { display: flex; gap: 8px; align-items: center; }
 .settings-section select, .settings-section input[type="range"] {
-  border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; background: #fff;
+  border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; background: var(--card); /* themed */
 }
 
 /* ─────────── Empty State ─────────── */
-
 .empty-state {
   flex: 1;
   display: none;
