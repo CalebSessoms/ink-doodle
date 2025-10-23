@@ -5,6 +5,11 @@ const { app, BrowserWindow, ipcMain, Menu } = require("electron");
 const path = require("path");
 const fs = require("fs");
 
+// Enable env vars and TS in main, then load IPC handlers
+require("dotenv/config");
+require("ts-node/register");
+require("./src/main/ipc.ts");
+
 // ---------- Paths ----------
 const PROJECTS_ROOT = () => path.join(app.getPath("documents"), "InkDoodleProjects");
 const WORKSPACE_DIR = () => path.join(app.getPath("userData"), "workspace");

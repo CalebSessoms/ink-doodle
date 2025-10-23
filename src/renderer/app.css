@@ -607,6 +607,81 @@ body.theme-slate .body {
   border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; background: var(--card); /* themed */
 }
 
+/* NEW: Appearance mode toggle (Theme ↔ Background) */
+.settings-section .toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+.settings-section .toggle input[type="checkbox"][role="switch"] {
+  /* Visually hidden but accessible */
+  position: absolute;
+  opacity: 0;
+  width: 1px; height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.settings-section .toggle .toggle-track {
+  position: relative;
+  width: 86px;
+  height: 30px;
+  border-radius: 999px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+  box-shadow: var(--shadow-1);
+}
+.settings-section .toggle .toggle-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: transform .2s ease;
+  box-shadow: 0 2px 6px rgba(0,0,0,.15);
+}
+.settings-section .toggle .toggle-label {
+  pointer-events: none;
+  font-weight: 600;
+  line-height: 1;
+}
+.settings-section .toggle .toggle-label.left { color: var(--fg); }
+.settings-section .toggle .toggle-label.right { color: var(--muted); }
+
+/* Checked state → move thumb and swap label emphasis */
+.settings-section .toggle input[type="checkbox"][role="switch"]:checked + .toggle-track .toggle-thumb {
+  transform: translateX(56px); /* 86 - 24 - 6 (margins) */
+}
+.settings-section .toggle input[type="checkbox"][role="switch"]:checked + .toggle-track .toggle-label.left {
+  color: var(--muted);
+}
+.settings-section .toggle input[type="checkbox"][role="switch"]:checked + .toggle-track .toggle-label.right {
+  color: var(--fg);
+}
+
+/* Focus visible ring */
+.settings-section .toggle input[type="checkbox"][role="switch"]:focus-visible + .toggle-track {
+  outline: 2px solid #c7d2fe;
+  outline-offset: 0;
+  border-color: #c7d2fe;
+  box-shadow: 0 0 0 3px rgba(99,102,241,.15);
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .settings-section .toggle .toggle-thumb { transition: none; }
+}
+
 /* ─────────── Empty State ─────────── */
 .empty-state {
   flex: 1;

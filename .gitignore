@@ -20,3 +20,6 @@ Thumbs.db
 # accidental copies
 src - Copy/
 * - Copy/
+
+# env
+.env

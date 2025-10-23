@@ -152,34 +152,26 @@
         <button class="icon-btn" id="settings-close" aria-label="Close">✕</button>
       </div>
 
+     <!-- NEW: Appearance mode toggle + a single dynamic select -->
       <div class="settings-section">
-        <h4>Theme</h4>
         <div class="row">
-          <label>Palette
-            <select id="theme-palette">
-              <option value="slate" selected>Slate (default)</option>
-              <option value="light">Light</option>
-              <option value="dark">Dark</option>
-              <option value="forest">Forest</option>
-              <option value="rose">Rose</option>
-            </select>
+          <label class="toggle">
+            <span>Theme/Background</span>
+            <input id="appearance-mode" type="checkbox" role="switch" aria-label="Toggle Theme/Background">
+            <span class="toggle-track" aria-hidden="true">
+              <span class="toggle-thumb"></span>
+            </span>
+          </label>
+
+          <label>
+            <span id="appearance-label">Theme</span>
+            <select id="appearance-select" aria-label="Theme or Background"></select>
           </label>
         </div>
       </div>
 
+      <!-- NEW: Visual tweaks kept together -->
       <div class="settings-section">
-        <h4>Background</h4>
-        <div class="row">
-          <label>Image
-            <select id="theme-bg">
-              <option value="none" selected>None</option>
-              <option value="aurora">Aurora Gradient</option>
-              <option value="space">Deep Space</option>
-              <option value="sunset">Sunset Hills</option>
-              <option value="ocean">Ocean Mist</option>
-            </select>
-          </label>
-        </div>
         <div class="row">
           <label>Overlay Opacity
             <input id="bg-opacity" type="range" min="0" max="60" step="5" value="20" />

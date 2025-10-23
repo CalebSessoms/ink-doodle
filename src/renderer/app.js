@@ -291,18 +291,18 @@ function dbg(msg) {
     goalFill: $("#goal-fill"),
     goalPct: $("#goal-pct"),
 
-    // NEW: settings UI
+   // NEW: settings UI
     settingsBtn: $("#settings-btn"),
     settingsModal: $("#settings-modal"),
     settingsClose: $("#settings-close"),
-    // REPURPOSE: use theme-select as the unified “appearance” select
-    appearanceSelect: $("#theme-select"),
+    // NEW: unified toggle + select + label
+    appearanceMode: $("#appearance-mode"),
+    appearanceSelect: $("#appearance-select"),
+    appearanceLabel: $("#appearance-label"),
     // keep background sliders
     bgOpacity: $("#bg-opacity"),
     bgBlur: $("#bg-blur"),
-    editorDim: $("#editor-dim"),
-    // NEW: dynamically injected mode radios container
-    appearanceModeHost: $("#appearance-mode"),
+    editorDim: $("#dim-editor"),
     // NEW: buttons inside modal
     settingsDone: $("#settings-done"),
     settingsReset: $("#settings-reset"),
@@ -1065,7 +1065,7 @@ function dbg(msg) {
       state.counters = ui.counters || state.counters;
       if (!ui.counters) deriveCountersIfMissing();
 
-      // restore UI prefs with defaults
+     // restore UI prefs with defaults
       state.uiPrefs.mode = ui.mode || state.uiPrefs.mode;
       state.uiPrefs.theme = ui.theme || state.uiPrefs.theme;
       state.uiPrefs.bg = ui.bg || state.uiPrefs.bg;
@@ -1079,14 +1079,6 @@ function dbg(msg) {
         t.classList.toggle("active", active);
         t.setAttribute("aria-selected", active ? "true" : "false");
       });
-
-      // NEW: restore UI prefs (with defaults if missing)
-      state.uiPrefs.theme = data?.ui?.theme || state.uiPrefs.theme;
-      state.uiPrefs.bg = data?.ui?.bg || state.uiPrefs.bg;
-      state.uiPrefs.bgOpacity = (typeof data?.ui?.bgOpacity === "number") ? data.ui.bgOpacity : state.uiPrefs.bgOpacity;
-      state.uiPrefs.bgBlur = (typeof data?.ui?.bgBlur === "number") ? data.ui.bgBlur : state.uiPrefs.bgBlur;
-      state.uiPrefs.editorDim = !!(data?.ui?.editorDim ?? state.uiPrefs.editorDim);
-      applyThemeAndBackground();
 
       const sel = state.entries.find(e=>e.id===state.selectedId) || visibleEntries()[0];
       if (sel) { state.selectedId = sel.id; populateEditor(sel); }
@@ -1245,22 +1237,50 @@ el.wordGoal?.addEventListener("input", () => {
     tab.addEventListener("click", () => switchTab(tab.dataset.tab));
   });
 
-  // NEW: settings modal open/close
-  function openSettings() {
-    dbg("settings: open");
-    el.settingsModal?.classList.remove("hidden");
-    // preload controls from state
-    if (el.themeSelect) el.themeSelect.value = state.uiPrefs.theme;
-    if (el.bgSelect) el.bgSelect.value = state.uiPrefs.bg;
-    if (el.bgOpacity) el.bgOpacity.value = String(state.uiPrefs.bgOpacity ?? 0.2);
-    if (el.bgBlur) el.bgBlur.value = String(state.uiPrefs.bgBlur ?? 2);
-    if (el.editorDim) el.editorDim.checked = !!state.uiPrefs.editorDim;
-  }
+// NEW: settings modal open/close
   function closeSettings() {
     dbg("settings: close");
     el.settingsModal?.classList.add("hidden");
   }
   function isSettingsOpen(){ return !!el.settingsModal && !el.settingsModal.classList.contains("hidden"); }
+
+  // Helpers for the new toggle + single select
+  function populateAppearanceSelect() {
+    if (!el.appearanceSelect || !el.appearanceLabel) return;
+    const mode = state.uiPrefs.mode === "background" ? "background" : "theme";
+    el.appearanceSelect.innerHTML = "";
+    if (mode === "background") {
+      el.appearanceLabel.textContent = "Background";
+      [["none","None"],["aurora","Aurora"],["space","Space"],["sunset","Sunset"],["ocean","Ocean"]]
+        .forEach(([v,label]) => {
+          const opt = document.createElement("option");
+          opt.value = v; opt.textContent = label; el.appearanceSelect.appendChild(opt);
+        });
+      el.appearanceSelect.value = state.uiPrefs.bg || "aurora";
+      el.appearanceSelect.setAttribute("data-kind","bg");
+    } else {
+      el.appearanceLabel.textContent = "Theme";
+      [["slate","Slate"],["light","Light"],["dark","Dark"],["forest","Forest"],["rose","Rose"]]
+        .forEach(([v,label]) => {
+          const opt = document.createElement("option");
+          opt.value = v; opt.textContent = label; el.appearanceSelect.appendChild(opt);
+        });
+      el.appearanceSelect.value = state.uiPrefs.theme || "slate";
+      el.appearanceSelect.setAttribute("data-kind","theme");
+    }
+  }
+
+  function openSettings() {
+    dbg("settings: open");
+    el.settingsModal?.classList.remove("hidden");
+    // sync toggle: unchecked=theme, checked=background
+    if (el.appearanceMode) el.appearanceMode.checked = (state.uiPrefs.mode === "background");
+    populateAppearanceSelect();
+    // sliders (opacity now in percent 0..60)
+    if (el.bgOpacity) el.bgOpacity.value = String(Math.round((state.uiPrefs.bgOpacity ?? 0.2) * 100));
+    if (el.bgBlur) el.bgBlur.value = String(state.uiPrefs.bgBlur ?? 2);
+    if (el.editorDim) el.editorDim.checked = !!state.uiPrefs.editorDim;
+  }
 
   el.settingsBtn?.addEventListener("click", openSettings);
   el.settingsClose?.addEventListener("click", closeSettings);
@@ -1272,97 +1292,39 @@ el.wordGoal?.addEventListener("input", () => {
     closeSettings();
   });
 
-  // NEW: ensure a mode toggle row exists (radio buttons)
-  function ensureAppearanceModeUI() {
-    if (document.getElementById("mode-theme")) return; // already injected
-    const head = document.querySelector(".settings-head");
-    if (!head) return;
-    const wrap = document.createElement("div");
-    wrap.id = "appearance-mode";
-    wrap.style.display = "flex";
-    wrap.style.alignItems = "center";
-    wrap.style.gap = "12px";
-    wrap.innerHTML = `
-      <label style="display:flex;align-items:center;gap:6px;">
-        <input type="radio" name="appearance-mode" id="mode-theme" value="theme"> Theme
-      </label>
-      <label style="display:flex;align-items:center;gap:6px;">
-        <input type="radio" name="appearance-mode" id="mode-background" value="background"> Background
-      </label>
-    `;
-    head.appendChild(wrap);
-  }
-
-  // unified select: populate options based on current mode
-  function populateAppearanceSelect() {
-    const select = el.appearanceSelect;
-    if (!select) return;
-    select.innerHTML = "";
-    if (state.uiPrefs.mode === "background") {
-      [["none","None"],["aurora","Aurora"],["space","Space"],["sunset","Sunset"],["ocean","Ocean"]]
-        .forEach(([v,label]) => {
-          const opt = document.createElement("option");
-          opt.value = v; opt.textContent = label; select.appendChild(opt);
-        });
-      select.value = state.uiPrefs.bg || "aurora";
-      select.setAttribute("data-kind","bg");
-    } else {
-      [["slate","Slate"],["light","Light"],["dark","Dark"],["forest","Forest"],["rose","Rose"]]
-        .forEach(([v,label]) => {
-          const opt = document.createElement("option");
-          opt.value = v; opt.textContent = label; select.appendChild(opt);
-        });
-      select.value = state.uiPrefs.theme || "slate";
-      select.setAttribute("data-kind","theme");
-    }
-  }
-
-  // open settings: inject radios, set checked state, populate single select, and sync sliders
-  function openSettings() {
-    el.settingsModal?.classList.remove("hidden");
-    ensureAppearanceModeUI();
-    const rTheme = document.getElementById("mode-theme");
-    const rBg = document.getElementById("mode-background");
-    if (rTheme && rBg) {
-      rTheme.checked = state.uiPrefs.mode !== "background";
-      rBg.checked = state.uiPrefs.mode === "background";
-      rTheme.onchange = () => { state.uiPrefs.mode = "theme"; populateAppearanceSelect(); applyThemeAndBackground(); touchSave(); };
-      rBg.onchange = () => { state.uiPrefs.mode = "background"; populateAppearanceSelect(); applyThemeAndBackground(); touchSave(); };
-    }
+  // Toggle: unchecked=theme, checked=background
+  el.appearanceMode?.addEventListener("change", () => {
+    state.uiPrefs.mode = el.appearanceMode.checked ? "background" : "theme";
+    dbg(`settings: mode -> ${state.uiPrefs.mode}`);
     populateAppearanceSelect();
-    if (el.bgOpacity) el.bgOpacity.value = String(state.uiPrefs.bgOpacity ?? 0.2);
-    if (el.bgBlur) el.bgBlur.value = String(state.uiPrefs.bgBlur ?? 2);
-    if (el.editorDim) el.editorDim.checked = !!state.uiPrefs.editorDim;
-  }
+    applyThemeAndBackground();
+    touchSave();
+  });
 
-  // unified select → updates either theme or background based on data-kind
+  // Unified select → updates either theme or background based on data-kind
   el.appearanceSelect?.addEventListener("change", () => {
     const kind = el.appearanceSelect.getAttribute("data-kind") || "theme";
-    if (kind === "bg") state.uiPrefs.bg = el.appearanceSelect.value;
-    else state.uiPrefs.theme = el.appearanceSelect.value;
+    if (kind === "bg") {
+      state.uiPrefs.bg = el.appearanceSelect.value;
+      dbg(`settings: bg -> ${state.uiPrefs.bg}`);
+    } else {
+      state.uiPrefs.theme = el.appearanceSelect.value;
+      dbg(`settings: theme -> ${state.uiPrefs.theme}`);
+    }
     applyThemeAndBackground();
     touchSave();
   });
-  // NEW: extra safety for some UIs that emit input instead of change
-  el.themeSelect?.addEventListener("input", () => {
-    state.uiPrefs.theme = el.themeSelect.value;
-    dbg(`settings: theme(input) -> ${state.uiPrefs.theme}`);
-    applyThemeAndBackground();
-    touchSave();
-  });
-  el.bgSelect?.addEventListener("change", () => {
-    state.uiPrefs.bg = el.bgSelect.value;
-    dbg(`settings: background -> ${state.uiPrefs.bg}`);
-    applyThemeAndBackground();
-    touchSave();
-  });
+
+  // Opacity slider now in percent (0..60) → store as 0..0.6
   el.bgOpacity?.addEventListener("input", () => {
-    const v = parseFloat(el.bgOpacity.value);
-    state.uiPrefs.bgOpacity = Number.isFinite(v) ? Math.max(0, Math.min(0.6, v)) : 0.2;
+    const p = parseInt(el.bgOpacity.value, 10);
+    const clamped = Number.isFinite(p) ? Math.max(0, Math.min(60, p)) : 20;
+    state.uiPrefs.bgOpacity = clamped / 100;
     dbg(`settings: bgOpacity -> ${state.uiPrefs.bgOpacity}`);
     applyThemeAndBackground();
     touchSave();
   });
+
   el.bgBlur?.addEventListener("input", () => {
     const v = parseInt(el.bgBlur.value, 10);
     state.uiPrefs.bgBlur = Number.isFinite(v) ? Math.max(0, Math.min(8, v)) : 2;
@@ -1370,7 +1332,7 @@ el.wordGoal?.addEventListener("input", () => {
     applyThemeAndBackground();
     touchSave();
   });
-   el.editorDim?.addEventListener("change", () => {
+  el.editorDim?.addEventListener("change", () => {
     state.uiPrefs.editorDim = !!el.editorDim.checked;
     dbg(`settings: editorDim -> ${state.uiPrefs.editorDim}`);
     applyThemeAndBackground();
@@ -1378,19 +1340,20 @@ el.wordGoal?.addEventListener("input", () => {
   });
 
 
- // NEW: Reset to default (Slate + Aurora, 0.2 opacity, 2px blur, dim off)
+  // NEW: Reset to default (mode=theme, Slate; bg=Aurora; opacity 20%; blur 2; dim off)
   el.settingsReset?.addEventListener("click", () => {
     dbg("settings: reset to defaults");
+    state.uiPrefs.mode = "theme";
     state.uiPrefs.theme = "slate";
     state.uiPrefs.bg = "aurora";
     state.uiPrefs.bgOpacity = 0.2;
     state.uiPrefs.bgBlur = 2;
     state.uiPrefs.editorDim = false;
 
-    // reflect in controls
-    if (el.themeSelect) el.themeSelect.value = state.uiPrefs.theme;
-    if (el.bgSelect) el.bgSelect.value = state.uiPrefs.bg;
-    if (el.bgOpacity) el.bgOpacity.value = String(state.uiPrefs.bgOpacity);
+    // reflect in controls (toggle + single select + sliders)
+    if (el.appearanceMode) el.appearanceMode.checked = false; // theme
+    populateAppearanceSelect();
+    if (el.bgOpacity) el.bgOpacity.value = String(Math.round(state.uiPrefs.bgOpacity * 100));
     if (el.bgBlur) el.bgBlur.value = String(state.uiPrefs.bgBlur);
     if (el.editorDim) el.editorDim.checked = state.uiPrefs.editorDim;
 
@@ -1500,6 +1463,14 @@ el.wordGoal?.addEventListener("input", () => {
     if (!ipcRenderer) {
       dbg("No ipcRenderer; cannot manage projects. Proceeding without project picker.");
       return;
+    }
+
+    // DB connectivity smoke test (renderer → main IPC → DB)
+    try {
+      const ping = await ipcRenderer.invoke("db:ping");
+      dbg(`db:ping -> ${JSON.stringify(ping)}`);
+    } catch (err) {
+      dbg(`db:ping error: ${err?.message || err}`);
     }
 
     const ap = await ipcRenderer.invoke("project:activePath").catch(e=>({ok:false,error:String(e)}));
