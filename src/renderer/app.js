@@ -458,10 +458,56 @@ function dbg(msg) {
     const editor = document.querySelector(".editor");
     if (editor) editor.classList.toggle("dimmed", !!editorDim);
 
-    // Hide legacy #bg-select if it exists (we now use a single select)
+      // Hide legacy #bg-select if it exists (we now use a single select)
     const legacyBg = document.getElementById("bg-select");
     if (legacyBg) legacyBg.closest(".settings-section")?.classList.add("hidden");
   }
+
+// ───────────────── UI Prefs ↔ DB (load/save) ─────────────────
+let savePrefsTimer = null;
+
+function getCurrentUIPrefs() {
+  const { mode, theme, bg, bgOpacity, bgBlur, editorDim } = state.uiPrefs;
+  return { mode, theme, bg, bgOpacity, bgBlur, editorDim };
+}
+
+async function loadUIPrefs() {
+  if (!ipcRenderer) return;
+  try {
+    const res = await ipcRenderer.invoke("prefs:get");
+    if (res?.ok && res.prefs?.ui_prefs) {
+      const u = res.prefs.ui_prefs || {};
+      state.uiPrefs.mode      = u.mode      ?? state.uiPrefs.mode;
+      state.uiPrefs.theme     = u.theme     ?? state.uiPrefs.theme;
+      state.uiPrefs.bg        = u.bg        ?? state.uiPrefs.bg;
+      state.uiPrefs.bgOpacity = (typeof u.bgOpacity === "number") ? u.bgOpacity : state.uiPrefs.bgOpacity;
+      state.uiPrefs.bgBlur    = (typeof u.bgBlur    === "number") ? u.bgBlur    : state.uiPrefs.bgBlur;
+      state.uiPrefs.editorDim = !!(u.editorDim ?? state.uiPrefs.editorDim);
+      applyThemeAndBackground();
+      dbg("prefs:get -> applied ui_prefs from DB");
+    } else {
+      dbg("prefs:get -> no ui_prefs in DB; using defaults");
+    }
+  } catch (err) {
+    dbg(`prefs:get error: ${err?.message || err}`);
+  }
+}
+
+function saveUIPrefsDebounced() {
+  if (!ipcRenderer) return;
+  clearTimeout(savePrefsTimer);
+  savePrefsTimer = setTimeout(async () => {
+    try {
+      await ipcRenderer.invoke("prefs:set", {
+        key: "ui_prefs",
+        value: getCurrentUIPrefs(),
+      });
+      dbg("prefs:set -> ui_prefs saved");
+    } catch (err) {
+      dbg(`prefs:set error: ${err?.message || err}`);
+    }
+  }, 400);
+}
 
 
   // ───────────────── Project Picker Overlay ─────────────────
@@ -1299,7 +1345,9 @@ el.wordGoal?.addEventListener("input", () => {
     populateAppearanceSelect();
     applyThemeAndBackground();
     touchSave();
+    saveUIPrefsDebounced();           // <-- NEW
   });
+
 
   // Unified select → updates either theme or background based on data-kind
   el.appearanceSelect?.addEventListener("change", () => {
@@ -1313,6 +1361,7 @@ el.wordGoal?.addEventListener("input", () => {
     }
     applyThemeAndBackground();
     touchSave();
+    saveUIPrefsDebounced();           // <-- NEW
   });
 
   // Opacity slider now in percent (0..60) → store as 0..0.6
@@ -1323,6 +1372,7 @@ el.wordGoal?.addEventListener("input", () => {
     dbg(`settings: bgOpacity -> ${state.uiPrefs.bgOpacity}`);
     applyThemeAndBackground();
     touchSave();
+    saveUIPrefsDebounced();           // <-- NEW
   });
 
   el.bgBlur?.addEventListener("input", () => {
@@ -1331,17 +1381,20 @@ el.wordGoal?.addEventListener("input", () => {
     dbg(`settings: bgBlur -> ${state.uiPrefs.bgBlur}`);
     applyThemeAndBackground();
     touchSave();
+    saveUIPrefsDebounced();           // <-- NEW
   });
+
   el.editorDim?.addEventListener("change", () => {
     state.uiPrefs.editorDim = !!el.editorDim.checked;
     dbg(`settings: editorDim -> ${state.uiPrefs.editorDim}`);
     applyThemeAndBackground();
     touchSave();
+    saveUIPrefsDebounced();           // <-- NEW
   });
 
 
   // NEW: Reset to default (mode=theme, Slate; bg=Aurora; opacity 20%; blur 2; dim off)
-  el.settingsReset?.addEventListener("click", () => {
+ el.settingsReset?.addEventListener("click", () => {
     dbg("settings: reset to defaults");
     state.uiPrefs.mode = "theme";
     state.uiPrefs.theme = "slate";
@@ -1359,6 +1412,7 @@ el.wordGoal?.addEventListener("input", () => {
 
     applyThemeAndBackground();
     touchSave();
+    saveUIPrefsDebounced();           // <-- NEW
   });
 
   // Manual Save + Save Back shortcuts + Picker shortcut
@@ -1473,6 +1527,9 @@ el.wordGoal?.addEventListener("input", () => {
       dbg(`db:ping error: ${err?.message || err}`);
     }
 
+    // Load & apply UI prefs from DB (if present)
+    await loadUIPrefs();
+
     const ap = await ipcRenderer.invoke("project:activePath").catch(e=>({ok:false,error:String(e)}));
     if (!ap?.ok) {
       dbg("activePath query failed; showing picker.");
@@ -1480,9 +1537,22 @@ el.wordGoal?.addEventListener("input", () => {
       return;
     }
 
-    state.workspacePath = ap.activePath || null;
-state.currentProjectDir = ap.currentProjectDir || null;
-SAVE_FILE = (state.workspacePath && path) ? path.join(state.workspacePath, "data", "project.json") : null;
+  state.workspacePath = ap.activePath || null;
+    state.currentProjectDir = ap.currentProjectDir || null;
+    SAVE_FILE = (state.workspacePath && path) ? path.join(state.workspacePath, "data", "project.json") : null;
+
+// PROBE (DB prefs): read workspace path from DB and log it
+try {
+  const prefs = await ipcRenderer.invoke("prefs:getWorkspacePath");
+  if (prefs?.ok) {
+    dbg(`DB prefs workspace_root: "${prefs.path || '(empty)'}"`);
+  } else {
+    dbg(`DB prefs read error: ${prefs?.error || 'unknown'}`);
+  }
+} catch (e) {
+  dbg(`DB prefs invoke failed: ${String(e)}`);
+}
+
 // NEW: establish a per-workspace debug log and flush any buffered lines
 if (state.workspacePath && path) {
   LOG_FILE = path.join(state.workspacePath, "debug.log");

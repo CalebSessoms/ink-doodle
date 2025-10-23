@@ -114,3 +114,53 @@ ink-doodle/
 Caleb Sessoms  
 Developed as part of the CS399 Independent Project (Computer Science A.S. Program)  
 GitHub: https://github.com/CalebSessoms/ink-doodle
+
+---
+
+## Database-Backed Mode (Neon PostgreSQL Integration)
+
+Ink Doodle now supports saving and loading data through a managed **PostgreSQL** database (hosted on **Neon**).  
+This replaces some local JSON storage with persistent cloud-based storage for project metadata and user preferences.
+
+### Current Database Features
+- ✅ `db:ping` connection test (visible in DevTools console)
+- ✅ `prefs:get` and `prefs:set` — settings now persist through the database
+- ⚙️ Workspace projects and entries still use local JSON until DB synchronization is complete
+- 🧩 Neon connection handled via `DATABASE_URL` in `.env`
+
+### Quick Test
+1. Launch the app (`npm start`).
+2. Open DevTools → Console → run  
+   ```js
+   require('electron').ipcRenderer.invoke('db:ping')
+You should see a response with the server time and Postgres version.
+3. Open Settings → Theme/Background and toggle the mode.
+The change should log a line similar to:
+
+csharp
+Copy code
+[debug] prefs:set -> ui_prefs saved
+Troubleshooting
+If database operations fail:
+
+Check that your .env file contains a valid DATABASE_URL.
+
+Confirm Neon is online.
+
+Review your local debug log at
+
+lua
+Copy code
+%APPDATA%\ink-doodle\workspace\debug.log
+(or ~/Library/Application Support/ink-doodle/workspace/debug.log on macOS).
+
+Look for lines starting with [debug] db: or [debug] prefs: for detailed context.
+
+Progress Summary (as of October 2025)
+Local autosave and workspace project system: stable
+
+Theme/background preferences: persisted to DB
+
+Postgres integration: ping + prefs live
+
+Next phase: project entries and autosave synchronization via database
