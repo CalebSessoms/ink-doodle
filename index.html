@@ -15,13 +15,13 @@
         <span class="divider">•</span>
         <span id="project-name" contenteditable="true" spellcheck="false">Untitled Project</span>
       </div>
-      <div class="topbar-right">
+       <div class="topbar-right">
         <button class="icon-btn" id="settings-btn" type="button" aria-label="Settings">⚙</button>
+
+        <!-- Simple Logout (replaces dropdown) -->
+        <button class="btn" id="logout-btn" type="button">Log out</button>
       </div>
     </header>
-
-
-    <!-- Main Content: Sidebar + Editor -->
     <main class="main">
       <!-- Left Sidebar -->
       <aside class="sidebar" aria-label="Writing sidebar">
@@ -194,7 +194,31 @@
         <button class="btn primary" id="settings-done">Done (Esc)</button>
       </div>
     </div>
+   </div>
+
+  <!-- Login Modal -->
+  <div id="login-modal" class="settings-modal hidden" role="dialog" aria-modal="true" aria-label="Login">
+    <div class="settings-card" style="max-width:420px;">
+      <div class="settings-head">
+        <h3>Sign in</h3>
+        <button class="icon-btn" id="login-cancel" aria-label="Close">✕</button>
+      </div>
+
+      <div class="settings-section">
+        <div class="row" style="flex-direction:column; gap:8px;">
+          <label>Email</label>
+          <input id="login-email" type="email" placeholder="you@example.com" autocomplete="email" />
+          <div id="login-error" role="alert" style="color:#b91c1c; font-size:12px; min-height:1.2em;"></div>
+        </div>
+      </div>
+
+      <div class="settings-foot">
+        <div class="spacer"></div>
+        <button class="btn primary" id="login-submit">Sign in</button>
+      </div>
+    </div>
   </div>
+  <!-- Login Modal -->
 
   <script src="./src/renderer/app.js"></script>
 </body>

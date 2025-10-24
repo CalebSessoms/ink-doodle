@@ -50,6 +50,9 @@ function dbg(msg) {
     selectedId: null,
     counters: { chapter: 1, note: 1, reference: 1 },
 
+    // Logged-in creator info ─────────────
+    authUser: null,  // { id, code, email, name } or null
+
     // Project system
     workspacePath: null,       // <userData>/workspace
     currentProjectDir: null,   // Documents/InkDoodleProjects/<ProjectName>
@@ -65,9 +68,9 @@ function dbg(msg) {
       overPosition: null, // "before" | "after"
     },
 
-    // NEW: UI preferences (theme/background)
+    // UI preferences (theme/background)
     uiPrefs: {
-      mode: "theme",       // NEW: "theme" | "background"
+      mode: "theme",       // "theme" | "background"
       theme: "slate",      // "slate" | "light" | "dark" | "forest" | "rose"
       bg: "aurora",        // "none" | "aurora" | "space" | "sunset" | "ocean"
       bgOpacity: 0.2,      // 0..0.6
@@ -237,6 +240,83 @@ function dbg(msg) {
     finderEl.style.display = "none";
   }
 
+  // ───────────────── Login Modal (email-only MVP) ─────────────────
+  let loginModal = null;
+
+  function ensureLoginModal() {
+    if (loginModal) return loginModal;
+
+    loginModal = document.createElement("div");
+    loginModal.id = "login-modal";
+    loginModal.innerHTML = `
+      <div class="login-card">
+        <h2>Sign in to Ink Doodle</h2>
+        <p class="sub">Enter your email to load your projects from the cloud.</p>
+        <input id="login-email" type="email" placeholder="you@example.com" />
+        <button id="login-btn" class="btn primary">Sign In</button>
+      </div>`;
+    document.body.appendChild(loginModal);
+
+    const style = document.createElement("style");
+    style.textContent = `
+      #login-modal { position:fixed; inset:0; background:rgba(17,24,39,.85);
+        display:flex; align-items:center; justify-content:center; z-index:99999; }
+      .login-card { background:#fff; padding:24px 28px; border-radius:12px;
+        width:min(340px,90vw); text-align:center; font-family:Inter,system-ui,sans-serif;
+        box-shadow:0 20px 60px rgba(0,0,0,.35); }
+      .login-card h2 { margin:0 0 4px; font-size:20px; font-weight:700; }
+      .login-card .sub { font-size:13px; color:#6b7280; margin-bottom:12px; }
+      #login-email { width:100%; padding:10px; font-size:14px; border:1px solid #d1d5db;
+        border-radius:8px; margin-bottom:10px; }
+      #login-btn { padding:8px 12px; border:none; border-radius:8px;
+        background:#2563eb; color:#fff; cursor:pointer; font-weight:600; }
+      #login-btn:hover { background:#1d4ed8; }`;
+    document.head.appendChild(style);
+
+      loginModal.querySelector("#login-btn").addEventListener("click", async () => {
+      const email = loginModal.querySelector("#login-email").value.trim();
+      if (!email) return alert("Please enter your email address.");
+
+      dbg(`login: attempting for ${email}`);                     // debug
+      try {
+        const res = await ipcRenderer.invoke("auth:login", { email });
+        if (!res?.ok) return alert(res?.error || "Login failed.");
+        state.authUser = res.user;
+        dbg(`login -> ${res.user.email}`);
+
+        hideProjectPicker(); // NEW: collapse picker right after we have a user
+
+        // NEW: pull the user's remote snapshot right after sign-in
+        try {
+          await loadRemoteSnapshotIntoState();
+          dbg("login: remote snapshot loaded");                  // debug
+        } catch (x) {
+          dbg(`remote preload after login failed: ${x?.message || x}`);
+        }
+
+        hideLoginModal();
+
+        // NEW: immediately show the project picker after login
+        dbg("login: showing project picker now");                // debug
+        ensureProjectPicker();
+        showProjectPicker();
+      } catch (e) {
+        alert(`Login error:\n${e?.message || e}`);
+      }
+    });
+
+    return loginModal;
+  }
+
+  function showLoginModal() {
+    ensureLoginModal();
+    loginModal.style.display = "flex";
+  }
+
+  function hideLoginModal() {
+    if (loginModal) loginModal.style.display = "none";
+  }
+
   // Autosave tunables
   const AUTOSAVE_IDLE_MS = 1500;      // wait after edits
   const AUTOSAVE_FAILSAFE_MS = 20000; // if still dirty after this, force save
@@ -291,19 +371,19 @@ function dbg(msg) {
     goalFill: $("#goal-fill"),
     goalPct: $("#goal-pct"),
 
-   // NEW: settings UI
+   // Settings UI
     settingsBtn: $("#settings-btn"),
     settingsModal: $("#settings-modal"),
     settingsClose: $("#settings-close"),
-    // NEW: unified toggle + select + label
+    // Unified toggle + select + label
     appearanceMode: $("#appearance-mode"),
     appearanceSelect: $("#appearance-select"),
     appearanceLabel: $("#appearance-label"),
-    // keep background sliders
+    // Keep background sliders
     bgOpacity: $("#bg-opacity"),
     bgBlur: $("#bg-blur"),
     editorDim: $("#dim-editor"),
-    // NEW: buttons inside modal
+    // Buttons inside modal
     settingsDone: $("#settings-done"),
     settingsReset: $("#settings-reset"),
   };
@@ -314,6 +394,62 @@ function dbg(msg) {
   const capFirst = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
   const tabTypeMap = { chapters: "chapter", notes: "note", references: "reference" };
   const typeTabMap = { chapter: "chapters", note: "notes", reference: "references" };
+
+  // Map DB rows → renderer entries (read-only)
+  function mapDbChapters(rows) {
+    // rows: [{ id, code, number, title, status, tags, updated_at }, ...]
+    return (rows || []).map((r, idx) => ({
+      // use public code as stable id in UI
+      id: r.code || `db-ch-${r.id}`,
+      type: "chapter",
+      title: r.title || `Untitled Chapter ${(r.number ?? idx) + 1}`,
+      status: (r.status || "Draft").toLowerCase(),
+      tags: Array.isArray(r.tags) ? r.tags : [],
+      synopsis: r.summary || "",
+      body: r.content || "",
+      order_index: Number.isFinite(r.number) ? r.number : idx,
+      updated_at: r.updated_at || nowISO(),
+      // optional word goal if you add it later in DB:
+      word_goal: r.word_goal ?? 0,
+    }));
+  }
+
+  // Load first remote project (for the signed-in user) + its chapters (read-only)
+  async function loadRemoteSnapshotIntoState() {
+    if (!ipcRenderer) return;
+
+    // 1) list remote projects for current auth user
+    const projRes = await ipcRenderer.invoke("projects:listRemote").catch(e => ({ ok:false, error:String(e) }));
+    if (!projRes?.ok || !Array.isArray(projRes.items) || projRes.items.length === 0) {
+      dbg(`remote load skipped: ${projRes?.error || "no remote projects found"}`);
+      return;
+    }
+    const first = projRes.items[0];
+    const projectId = first.id;
+    dbg(`remote: using project ${first.title || projectId}`);
+
+    // 2) chapters for that project (pass numeric id)
+    const chRes = await ipcRenderer.invoke("chapters:listByProject", { projectIdOrCode: String(projectId) })
+      .catch(e => ({ ok:false, error:String(e) }));
+    if (!chRes?.ok) {
+      dbg(`remote chapters load failed: ${chRes?.error || "unknown error"}`);
+      return;
+    }
+
+    // 3) map → state and render (read-only swap)
+    const chapters = mapDbChapters(chRes.items || []);
+    const others = state.entries.filter(e => e.type !== "chapter");
+    state.entries = chapters.concat(others);
+
+    const vis = visibleEntries();
+    if (!state.selectedId && vis.length) state.selectedId = vis[0].id;
+    if (state.selectedId && !state.entries.find(e => e.id === state.selectedId) && vis.length) {
+      state.selectedId = vis[0].id;
+    }
+
+    renderList();
+    dbg(`remote: loaded ${chapters.length} chapters into UI (read-only).`);
+  }
 
   function timeAgo(iso) {
     if (!iso) return "—";
@@ -416,7 +552,7 @@ function dbg(msg) {
     document.head.appendChild(style);
   })();
 
-    // NEW: background host behind the app
+    // Background host behind the app
   function ensureAppBg() {
     let bg = document.querySelector(".app-bg");
     if (!bg) {
@@ -427,7 +563,7 @@ function dbg(msg) {
     return bg;
   }
 
-  // NEW: apply theme + background according to state.uiPrefs (now honors mode)
+  // Apply theme + background according to state.uiPrefs (now honors mode)
   function applyThemeAndBackground() {
     const { mode, theme, bg, bgOpacity, bgBlur, editorDim } = state.uiPrefs;
 
@@ -1174,7 +1310,7 @@ function saveUIPrefsDebounced() {
   window.addEventListener("beforeunload", () => {
   if (state.dirty) try { saveToDisk(); } catch {}
 });
-// NEW: pipe runtime errors into debug.log as well
+// Pipe runtime errors into debug.log as well
 window.addEventListener("error", (e) => _dbgAppendToFile(`[${new Date().toISOString()}] window.error: ${e.message}`));
 window.addEventListener("unhandledrejection", (e) => _dbgAppendToFile(`[${new Date().toISOString()}] unhandledrejection: ${String(e.reason)}`));
 
@@ -1264,7 +1400,7 @@ el.wordGoal?.addEventListener("input", () => {
     touchSave();
   });
 
-  // + New (sidebar)
+  // Sidebar
   el.newBtn?.addEventListener("click", () => {
     const kind = tabTypeMap[state.activeTab];
     createEntry(kind);
@@ -1283,7 +1419,7 @@ el.wordGoal?.addEventListener("input", () => {
     tab.addEventListener("click", () => switchTab(tab.dataset.tab));
   });
 
-// NEW: settings modal open/close
+// Settings modal open/close
   function closeSettings() {
     dbg("settings: close");
     el.settingsModal?.classList.add("hidden");
@@ -1333,7 +1469,7 @@ el.wordGoal?.addEventListener("input", () => {
   el.settingsModal?.addEventListener("click", (e) => {
     if (e.target === el.settingsModal) closeSettings();
   });
-  // NEW: Done (Esc) button closes modal
+  // Done (Esc) button closes modal
   el.settingsDone?.addEventListener("click", () => {
     closeSettings();
   });
@@ -1345,7 +1481,7 @@ el.wordGoal?.addEventListener("input", () => {
     populateAppearanceSelect();
     applyThemeAndBackground();
     touchSave();
-    saveUIPrefsDebounced();           // <-- NEW
+    saveUIPrefsDebounced();
   });
 
 
@@ -1361,7 +1497,7 @@ el.wordGoal?.addEventListener("input", () => {
     }
     applyThemeAndBackground();
     touchSave();
-    saveUIPrefsDebounced();           // <-- NEW
+    saveUIPrefsDebounced();
   });
 
   // Opacity slider now in percent (0..60) → store as 0..0.6
@@ -1372,7 +1508,7 @@ el.wordGoal?.addEventListener("input", () => {
     dbg(`settings: bgOpacity -> ${state.uiPrefs.bgOpacity}`);
     applyThemeAndBackground();
     touchSave();
-    saveUIPrefsDebounced();           // <-- NEW
+    saveUIPrefsDebounced();
   });
 
   el.bgBlur?.addEventListener("input", () => {
@@ -1381,7 +1517,7 @@ el.wordGoal?.addEventListener("input", () => {
     dbg(`settings: bgBlur -> ${state.uiPrefs.bgBlur}`);
     applyThemeAndBackground();
     touchSave();
-    saveUIPrefsDebounced();           // <-- NEW
+    saveUIPrefsDebounced();
   });
 
   el.editorDim?.addEventListener("change", () => {
@@ -1389,11 +1525,11 @@ el.wordGoal?.addEventListener("input", () => {
     dbg(`settings: editorDim -> ${state.uiPrefs.editorDim}`);
     applyThemeAndBackground();
     touchSave();
-    saveUIPrefsDebounced();           // <-- NEW
+    saveUIPrefsDebounced();
   });
 
 
-  // NEW: Reset to default (mode=theme, Slate; bg=Aurora; opacity 20%; blur 2; dim off)
+  // Reset to default (mode=theme, Slate; bg=Aurora; opacity 20%; blur 2; dim off)
  el.settingsReset?.addEventListener("click", () => {
     dbg("settings: reset to defaults");
     state.uiPrefs.mode = "theme";
@@ -1412,11 +1548,26 @@ el.wordGoal?.addEventListener("input", () => {
 
     applyThemeAndBackground();
     touchSave();
-    saveUIPrefsDebounced();           // <-- NEW
+    saveUIPrefsDebounced();
   });
 
-  // Manual Save + Save Back shortcuts + Picker shortcut
+   // Manual Save + Save Back shortcuts + Picker shortcut
   el.saveBtn?.addEventListener("click", () => { saveToDisk(); });
+
+  // NEW: Logout button (if present) → clear session & reload
+  const logoutBtn = document.getElementById("logout-btn");
+  if (logoutBtn && ipcRenderer) {
+    logoutBtn.addEventListener("click", async () => {
+      try {
+        const r = await ipcRenderer.invoke("auth:logout");
+        if (!r?.ok) return alert(`Logout failed: ${r?.error || "Unknown error"}`);
+        // Quick way to return to login screen with clean state:
+        location.reload();
+      } catch (err) {
+        alert(`Logout error: ${err?.message || err}`);
+      }
+    });
+  }
 
   // Delete current entry from the editor button
   el.deleteBtn?.addEventListener("click", () => {
@@ -1448,10 +1599,10 @@ el.wordGoal?.addEventListener("input", () => {
       showProjectPicker();
     }
 
-    // Open Quick Finder (Ctrl/Cmd+F)  // ADDED
-    if (mod && e.key.toLowerCase() === "f") { // ADDED
-      e.preventDefault();                      // ADDED
-      showFinder("");                          // ADDED
+    // Open Quick Finder (Ctrl/Cmd+F)
+    if (mod && e.key.toLowerCase() === "f") {
+      e.preventDefault();
+      showFinder("");
     }
 
     // Dynamic ESC (B): close settings → finder → picker
@@ -1499,12 +1650,13 @@ el.wordGoal?.addEventListener("input", () => {
     ipcRenderer.on("menu:openPicker", () => { showProjectPicker(); });
     ipcRenderer.on("menu:openFinder", () => { showFinder(""); });
     
-    // Handle delete command from menu
+     // Handle delete command from menu
     ipcRenderer.on("menu:delete", () => {
       const cur = state.entries.find(x => x.id === state.selectedId);
       if (cur) confirmAndDelete(cur.id);
     });
   }
+  // ⬆️ removed the stray closing brace here
 
   // ───────────────── Init ─────────────────
   (async function init() {
@@ -1527,8 +1679,50 @@ el.wordGoal?.addEventListener("input", () => {
       dbg(`db:ping error: ${err?.message || err}`);
     }
 
+    // ── NEW: auth state on boot ──
+    try {
+      const a = await ipcRenderer.invoke("auth:get");
+      if (a?.ok && a.user) {
+        dbg(`auth:get -> logged in as ${a.user.email || a.user.id}`);
+        // If a login screen exists, hide it defensively
+        const loginA = document.getElementById("login-screen");
+        const loginB = document.querySelector('[data-view="login"]');
+        if (loginA) loginA.style.display = "none";
+        if (loginB) loginB.style.display = "none";
+      } else {
+        dbg("auth:get -> no user; login screen should be visible.");
+      }
+    } catch (err) {
+      dbg(`auth:get error: ${err?.message || err}`);
+    }
+
+    // ───────────── Auth check / Login prompt ─────────────
+    try {
+      const auth = await ipcRenderer.invoke("auth:get");
+      if (auth?.ok && auth.user) {
+        state.authUser = auth.user;
+        dbg(`auth:get -> signed in as ${auth.user.email}`);
+      } else {
+        dbg("No auth user; showing login modal");
+        hideProjectPicker();         // Ensure picker isn’t visible when signed-out
+        showLoginModal();
+        return;                      // Stop init here until user logs in
+      }
+    } catch (e) {
+      dbg(`auth:get error: ${e?.message || e}`);
+      showLoginModal();
+      return;                        // Stop init on error as well
+    }
+
     // Load & apply UI prefs from DB (if present)
     await loadUIPrefs();
+
+    // NEW: Pull a read-only chapter snapshot from the user's remote projects
+    try {
+      await loadRemoteSnapshotIntoState();
+    } catch (e) {
+      dbg(`remote preload error: ${e?.message || e}`);
+    }
 
     const ap = await ipcRenderer.invoke("project:activePath").catch(e=>({ok:false,error:String(e)}));
     if (!ap?.ok) {
@@ -1553,7 +1747,7 @@ try {
   dbg(`DB prefs invoke failed: ${String(e)}`);
 }
 
-// NEW: establish a per-workspace debug log and flush any buffered lines
+// Establish a per-workspace debug log and flush any buffered lines
 if (state.workspacePath && path) {
   LOG_FILE = path.join(state.workspacePath, "debug.log");
   try { if (!fs.existsSync(state.workspacePath)) fs.mkdirSync(state.workspacePath, { recursive: true }); } catch {}
@@ -1571,7 +1765,7 @@ if (!state.currentProjectDir || !state.workspacePath) {
     await appLoadFromDisk();
     renderList();
 
-    // NEW: ensure BG node exists, then apply theme/bg
+    // Ensure BG node exists, then apply theme/bg
     ensureAppBg();
     applyThemeAndBackground();
 
