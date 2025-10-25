@@ -21,6 +21,25 @@ function dbg(msg) {
   const b = document.getElementById("debug-banner");
   if (b) b.textContent = `[debug] ${msg}`;
 }
+
+// NEW: resolve debug log target ASAP using main's active workspace
+async function _wireDebugLogPathEarly() {
+  if (!ipcRenderer || !path) return;
+  try {
+    const r = await ipcRenderer.invoke("project:activePath");
+    if (r?.ok && r.activePath && !LOG_FILE) {
+      LOG_FILE = path.join(r.activePath, "debug.log");
+      // flush any buffered lines
+      for (const ln of _dbgBuf.splice(0, _dbgBuf.length)) {
+        try { fs.appendFileSync(LOG_FILE, ln + "\n", "utf8"); } catch {}
+      }
+      dbg(`debug log wired → ${LOG_FILE}`);
+    }
+  } catch (e) {
+    // ignore; we'll retry after login/load
+  }
+}
+
 (function banner() {
   const b = document.createElement("div");
     b.id = "debug-banner";
@@ -271,41 +290,41 @@ function dbg(msg) {
       #login-btn { padding:8px 12px; border:none; border-radius:8px;
         background:#2563eb; color:#fff; cursor:pointer; font-weight:600; }
       #login-btn:hover { background:#1d4ed8; }`;
-    document.head.appendChild(style);
+     document.head.appendChild(style);
 
       loginModal.querySelector("#login-btn").addEventListener("click", async () => {
-      const email = loginModal.querySelector("#login-email").value.trim();
-      if (!email) return alert("Please enter your email address.");
+        const email = loginModal.querySelector("#login-email").value.trim();
+        if (!email) return alert("Please enter your email address.");
 
-      dbg(`login: attempting for ${email}`);                     // debug
-      try {
-        const res = await ipcRenderer.invoke("auth:login", { email });
-        if (!res?.ok) return alert(res?.error || "Login failed.");
-        state.authUser = res.user;
-        dbg(`login -> ${res.user.email}`);
-
-        hideProjectPicker(); // NEW: collapse picker right after we have a user
-
-        // NEW: pull the user's remote snapshot right after sign-in
+        dbg(`login: attempting for ${email}`);
         try {
-          await loadRemoteSnapshotIntoState();
-          dbg("login: remote snapshot loaded");                  // debug
-        } catch (x) {
-          dbg(`remote preload after login failed: ${x?.message || x}`);
+          const res = await ipcRenderer.invoke("auth:login", { email });
+          if (!res?.ok) return alert(res?.error || "Login failed.");
+
+          state.authUser = res.user;
+          dbg(`login -> ${res.user.email}`);
+
+          // Make sure any old picker is closed, then preload remote
+          hideProjectPicker();
+          try {
+            await loadRemoteSnapshotIntoState();
+            dbg("login: remote snapshot loaded");
+          } catch (x) {
+            dbg(`remote preload after login failed: ${x?.message || x}`);
+          }
+
+          hideLoginModal();
+
+          // Immediately show picker after a successful login
+          dbg("login: showing project picker now");
+          ensureProjectPicker();
+          showProjectPicker();
+        } catch (e) {
+          alert(`Login error:\n${e?.message || e}`);
         }
+      });
 
-        hideLoginModal();
-
-        // NEW: immediately show the project picker after login
-        dbg("login: showing project picker now");                // debug
-        ensureProjectPicker();
-        showProjectPicker();
-      } catch (e) {
-        alert(`Login error:\n${e?.message || e}`);
-      }
-    });
-
-    return loginModal;
+      return loginModal;
   }
 
   function showLoginModal() {
@@ -1656,7 +1675,43 @@ el.wordGoal?.addEventListener("input", () => {
       if (cur) confirmAndDelete(cur.id);
     });
   }
-  // ⬆️ removed the stray closing brace here
+
+  // Preload ALL remote data (projects + chapters + notes + refs) for current user
+  async function loadRemoteSnapshotIntoState() {
+    dbg("remote: preloading snapshot…");
+    const out = {
+      projects: [],
+      chaptersByProject: {},
+      notesByProject: {},
+      refsByProject: {}
+    };
+
+    // 1) Projects for current user
+    const p = await ipcRenderer.invoke("projects:listRemote").catch(err => ({ ok:false, error:String(err) }));
+    if (!p?.ok) {
+      dbg(`remote: listRemote failed: ${p?.error || "unknown"}`);
+      state.remote = out; // keep shape
+      return;
+    }
+    out.projects = p.items || [];
+
+    // 2) Children per project
+    for (const proj of out.projects) {
+      const [ch, no, rf] = await Promise.all([
+        ipcRenderer.invoke("chapters:listByProject", { projectIdOrCode: proj.id }).catch(e => ({ ok:false, items:[], error:String(e) })),
+        ipcRenderer.invoke("notes:listByProject",    { projectIdOrCode: proj.id }).catch(e => ({ ok:false, items:[], error:String(e) })),
+        ipcRenderer.invoke("refs:listByProject",     { projectIdOrCode: proj.id }).catch(e => ({ ok:false, items:[], error:String(e) }))
+      ]);
+
+      out.chaptersByProject[proj.id] = ch?.items || [];
+      out.notesByProject[proj.id]    = no?.items || [];
+      out.refsByProject[proj.id]     = rf?.items || [];
+    }
+
+    state.remote = out;
+    dbg(`remote: loaded ${out.projects.length} projects`);
+  }
+
 
   // ───────────────── Init ─────────────────
   (async function init() {
@@ -1696,7 +1751,7 @@ el.wordGoal?.addEventListener("input", () => {
       dbg(`auth:get error: ${err?.message || err}`);
     }
 
-    // ───────────── Auth check / Login prompt ─────────────
+     // ───────────── Auth check / Login prompt ─────────────
     try {
       const auth = await ipcRenderer.invoke("auth:get");
       if (auth?.ok && auth.user) {
@@ -1717,17 +1772,21 @@ el.wordGoal?.addEventListener("input", () => {
     // Load & apply UI prefs from DB (if present)
     await loadUIPrefs();
 
-    // NEW: Pull a read-only chapter snapshot from the user's remote projects
+    // Pull a read-only chapter snapshot from the user's remote projects
     try {
       await loadRemoteSnapshotIntoState();
+      dbg("boot: remote snapshot loaded");
     } catch (e) {
       dbg(`remote preload error: ${e?.message || e}`);
     }
 
+    // Always surface the picker at boot when user is signed-in
+    ensureProjectPicker();
+    showProjectPicker();
+
     const ap = await ipcRenderer.invoke("project:activePath").catch(e=>({ok:false,error:String(e)}));
     if (!ap?.ok) {
-      dbg("activePath query failed; showing picker.");
-      ensureProjectPicker(); showProjectPicker();
+      dbg("activePath query failed; picker remains open.");
       return;
     }
 
