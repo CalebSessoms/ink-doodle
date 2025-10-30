@@ -1,0 +1,1 @@
+// No-op - IPC handlers moved to db.sync.ipc.ts

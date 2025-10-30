@@ -1,0 +1,14 @@
+{
+  "id": "note-1761782856128-fz9shphg",
+  "type": "note",
+  "title": "Note 1",
+  "updated_at": "2025-10-30T00:07:58.467Z",
+  "created_at": "2025-10-30T00:07:36.128Z",
+  "order_index": 0,
+  "body": "basic body",
+  "tags": [
+    "exampleTag"
+  ],
+  "category": "Misc",
+  "pinned": true
+}

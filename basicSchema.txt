@@ -1,0 +1,163 @@
+List of relations
+Schema	Name	Type	Owner
+public	chapters	table	neondb_owner
+public	creators	table	neondb_owner
+public	id_counters	table	neondb_owner
+public	notes	table	neondb_owner
+public	prefs	table	neondb_owner
+public	projects	table	neondb_owner
+public	refs	table	neondb_owner
+public	users	table	neondb_owner
+(8 rows)
+
+Table "public.creators"
+Column	Type	Collation	Nullable	Default
+id	integer		not null	nextval('creators_id_seq'::regclass)
+email	text		not null	
+display_name	text		not null	
+created_at	timestamp without time zone			now()
+is_active	boolean			true
+updated_at	timestamp without time zone			now()
+last_login_at	timestamp without time zone			
+Indexes:
+"creators_pkey" PRIMARY KEY, btree (id)
+"creators_email_ci_idx" UNIQUE, btree (lower(email))
+"creators_email_key" UNIQUE CONSTRAINT, btree (email)
+Referenced by:
+TABLE "chapters" CONSTRAINT "chapters_creator_id_fkey" FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE
+TABLE "id_counters" CONSTRAINT "id_counters_creator_id_fkey" FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE
+TABLE "notes" CONSTRAINT "notes_creator_id_fkey" FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE
+TABLE "projects" CONSTRAINT "projects_creator_id_fkey" FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE
+TABLE "refs" CONSTRAINT "refs_creator_id_fkey" FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE
+Triggers:
+trg_creators_updated_at BEFORE UPDATE ON creators FOR EACH ROW EXECUTE FUNCTION set_updated_at()
+
+Table "public.projects"
+Column	Type	Collation	Nullable	Default
+id	integer		not null	nextval('projects_id_seq'::regclass)
+title	text		not null	
+creator_id	integer		not null	
+created_at	timestamp without time zone			now()
+updated_at	timestamp without time zone			now()
+code	text			
+Indexes:
+"projects_pkey" PRIMARY KEY, btree (id)
+"idx_projects_created_at" btree (created_at)
+"idx_projects_creator_id" btree (creator_id)
+"projects_code_key" UNIQUE CONSTRAINT, btree (code)
+Foreign-key constraints:
+"projects_creator_id_fkey" FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE
+Referenced by:
+TABLE "chapters" CONSTRAINT "chapters_project_id_fkey" FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+TABLE "notes" CONSTRAINT "notes_project_id_fkey" FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+TABLE "refs" CONSTRAINT "refs_project_id_fkey" FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+Triggers:
+trg_projects_assign_code BEFORE INSERT ON projects FOR EACH ROW EXECUTE FUNCTION projects_assign_code()
+trg_projects_updated_at BEFORE UPDATE ON projects FOR EACH ROW EXECUTE FUNCTION set_updated_at()
+
+Table "public.chapters"
+Column	Type	Collation	Nullable	Default
+id	integer		not null	nextval('chapters_id_seq'::regclass)
+project_id	integer		not null	
+creator_id	integer		not null	
+number	integer			
+title	text		not null	
+content	text			
+status	text			'draft'::text
+summary	text			
+tags	text[]			
+created_at	timestamp without time zone			now()
+updated_at	timestamp without time zone			now()
+code	text			
+word_goal	integer			0
+Indexes:
+"chapters_pkey" PRIMARY KEY, btree (id)
+"chapters_code_key" UNIQUE CONSTRAINT, btree (code)
+"chapters_project_number_key" UNIQUE CONSTRAINT, btree (project_id, number)
+"idx_chapters_creator_id" btree (creator_id)
+"idx_chapters_project_id" btree (project_id)
+"idx_chapters_project_number" btree (project_id, number)
+Foreign-key constraints:
+"chapters_creator_id_fkey" FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE
+"chapters_project_id_fkey" FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+Triggers:
+trg_chapters_assign_code BEFORE INSERT ON chapters FOR EACH ROW EXECUTE FUNCTION chapters_assign_code()
+trg_chapters_updated_at BEFORE UPDATE ON chapters FOR EACH ROW EXECUTE FUNCTION set_updated_at()
+
+Table "public.notes"
+Column	Type	Collation	Nullable	Default
+id	integer		not null	nextval('notes_id_seq'::regclass)
+project_id	integer		not null	
+creator_id	integer		not null	
+number	integer			
+title	text		not null	
+content	text			
+tags	text[]			
+category	text			
+pinned	boolean			false
+created_at	timestamp without time zone			now()
+updated_at	timestamp without time zone			now()
+code	text			
+Indexes:
+"notes_pkey" PRIMARY KEY, btree (id)
+"idx_notes_creator_id" btree (creator_id)
+"idx_notes_project_id" btree (project_id)
+"idx_notes_project_number" btree (project_id, number)
+"notes_code_key" UNIQUE CONSTRAINT, btree (code)
+"notes_project_number_key" UNIQUE CONSTRAINT, btree (project_id, number)
+Foreign-key constraints:
+"notes_creator_id_fkey" FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE
+"notes_project_id_fkey" FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+Triggers:
+trg_notes_assign_code BEFORE INSERT ON notes FOR EACH ROW EXECUTE FUNCTION notes_assign_code()
+trg_notes_updated_at BEFORE UPDATE ON notes FOR EACH ROW EXECUTE FUNCTION set_updated_at()
+
+Table "public.refs"
+Column	Type	Collation	Nullable	Default
+id	integer		not null	nextval('refs_id_seq'::regclass)
+project_id	integer		not null	
+creator_id	integer		not null	
+number	integer			
+title	text		not null	
+tags	text[]			
+reference_type	text			
+summary	text			
+source_link	text			
+content	text			
+created_at	timestamp without time zone			now()
+updated_at	timestamp without time zone			now()
+code	text			
+Indexes:
+"refs_pkey" PRIMARY KEY, btree (id)
+"idx_refs_creator_id" btree (creator_id)
+"idx_refs_project_id" btree (project_id)
+"idx_refs_project_number" btree (project_id, number)
+"refs_code_key" UNIQUE CONSTRAINT, btree (code)
+"refs_project_number_key" UNIQUE CONSTRAINT, btree (project_id, number)
+Foreign-key constraints:
+"refs_creator_id_fkey" FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE
+"refs_project_id_fkey" FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+Triggers:
+trg_refs_assign_code BEFORE INSERT ON refs FOR EACH ROW EXECUTE FUNCTION refs_assign_code()
+trg_refs_updated_at BEFORE UPDATE ON refs FOR EACH ROW EXECUTE FUNCTION set_updated_at()
+
+Table "public.prefs"
+Column	Type	Collation	Nullable	Default
+key	text		not null	
+value	jsonb		not null	'{}'::jsonb
+created_at	timestamp without time zone		not null	now()
+updated_at	timestamp without time zone		not null	now()
+Indexes:
+"prefs_pkey" PRIMARY KEY, btree (key)
+Triggers:
+prefs_set_updated_at BEFORE UPDATE ON prefs FOR EACH ROW EXECUTE FUNCTION set_updated_at()
+
+Table "public.id_counters"
+Column	Type	Collation	Nullable	Default
+creator_id	integer		not null	
+entity	text		not null	
+next_no	integer		not null	1
+Indexes:
+"id_counters_pkey" PRIMARY KEY, btree (creator_id, entity)
+Foreign-key constraints:
+"id_counters_creator_id_fkey" FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE

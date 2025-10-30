@@ -1,15 +1,26 @@
 // src/renderer/app.js
 // Project Picker + Workspace I/O + Drag-and-Drop Reorder + Delete + Menu integration + Autosave
+/* eslint-disable @typescript-eslint/no-var-requires */
 
 (() => {
   "use strict";
+
+/* eslint-disable @typescript-eslint/no-var-requires */
+const fs = require('fs');
+const path = require('path');
+const { ipcRenderer } = require('electron');
 
 // ───────────────── Debug helpers ─────────────────
 let LOG_FILE = null;
 const _dbgBuf = [];                // buffer while we don't know workspace
 function _dbgAppendToFile(line) {
   try {
-    if (!fs || !path || !LOG_FILE) return _dbgBuf.push(line);
+    if (!fs || !path || !LOG_FILE) {
+      _dbgBuf.push(line);
+      // Always try to resolve log path immediately for any message
+      _wireDebugLogPathEarly().catch(() => {});
+      return;
+    }
     fs.appendFileSync(LOG_FILE, line + "\n", "utf8");
   } catch (_) { /* ignore */ }
 }
@@ -26,17 +37,43 @@ function dbg(msg) {
 async function _wireDebugLogPathEarly() {
   if (!ipcRenderer || !path) return;
   try {
+    // First try to get active workspace path
     const r = await ipcRenderer.invoke("project:activePath");
-    if (r?.ok && r.activePath && !LOG_FILE) {
+    if (r?.ok && r.activePath) {
       LOG_FILE = path.join(r.activePath, "debug.log");
-      // flush any buffered lines
+    } else {
+      // Fallback: Try to get global app log path from main
+      const globalLog = await ipcRenderer.invoke("debug:getGlobalLogPath");
+      if (globalLog?.ok && globalLog.path) {
+        LOG_FILE = globalLog.path;
+      } else {
+        // Final fallback: Use app's root folder
+        const appRoot = await ipcRenderer.invoke("app:getPath", { name: "userData" });
+        if (appRoot?.ok) {
+          LOG_FILE = path.join(appRoot.path, "debug.log");
+        }
+      }
+    }
+
+    if (LOG_FILE) {
+      // Ensure log directory exists
+      try {
+        const logDir = path.dirname(LOG_FILE);
+        if (!fs.existsSync(logDir)) {
+          fs.mkdirSync(logDir, { recursive: true });
+        }
+      } catch (e) {
+        console.warn("Failed to create log directory:", e);
+      }
+
+      // Flush any buffered lines
       for (const ln of _dbgBuf.splice(0, _dbgBuf.length)) {
         try { fs.appendFileSync(LOG_FILE, ln + "\n", "utf8"); } catch {}
       }
       dbg(`debug log wired → ${LOG_FILE}`);
     }
   } catch (e) {
-    // ignore; we'll retry after login/load
+    console.warn("Failed to wire debug log:", e);
   }
 }
 
@@ -49,16 +86,12 @@ async function _wireDebugLogPathEarly() {
     document.addEventListener("DOMContentLoaded", () => document.body.appendChild(b));
   })();
 
-  // ───────────────── Node & Electron ─────────────────
-  let fs = null, path = null, ipcRenderer = null;
-  try {
-    fs = require("fs");
-    path = require("path");
-    ({ ipcRenderer } = require("electron"));
+  // Verify Node/Electron requirements are loaded
+  if (!fs || !path || !ipcRenderer) {
+    dbg("Node/Electron requirements missing. Check nodeIntegration/contextIsolation.");
+    console.error("Missing required modules");
+  } else {
     dbg("require(fs,path,ipcRenderer) OK");
-  } catch (e) {
-    dbg("Node/Electron require failed; check nodeIntegration/contextIsolation.");
-    console.error(e);
   }
 
   // ───────────────── Global/State ─────────────────
@@ -262,64 +295,173 @@ async function _wireDebugLogPathEarly() {
   // ───────────────── Login Modal (email-only MVP) ─────────────────
   let loginModal = null;
 
+  // Debug helper for login flow
+  function loginDbg(msg) {
+    try {
+      dbg(`[login] ${msg}`);
+    } catch (e) {
+      console.log("[login-debug]", msg);
+    }
+  }
+
   function ensureLoginModal() {
     if (loginModal) return loginModal;
 
+    // First remove any existing login modal
+    const existingModal = document.getElementById("login-modal-dynamic");
+    if (existingModal) existingModal.remove();
+
     loginModal = document.createElement("div");
-    loginModal.id = "login-modal";
+    loginModal.id = "login-modal-dynamic";
     loginModal.innerHTML = `
-      <div class="login-card">
+      <div class="login-card" tabindex="-1">
         <h2>Sign in to Ink Doodle</h2>
         <p class="sub">Enter your email to load your projects from the cloud.</p>
-        <input id="login-email" type="email" placeholder="you@example.com" />
-        <button id="login-btn" class="btn primary">Sign In</button>
+        <div class="input-wrap" tabindex="-1">
+          <input id="login-email-dynamic" 
+                 type="email" 
+                 placeholder="you@example.com" 
+                 spellcheck="false" 
+                 autocomplete="email" 
+                 autocapitalize="off"
+                 enterkeyhint="go"
+                 tabindex="1" />
+        </div>
+        <button id="login-btn-dynamic" class="btn primary" tabindex="2">Sign In</button>
       </div>`;
     document.body.appendChild(loginModal);
 
     const style = document.createElement("style");
     style.textContent = `
-      #login-modal { position:fixed; inset:0; background:rgba(17,24,39,.85);
-        display:flex; align-items:center; justify-content:center; z-index:99999; }
-      .login-card { background:#fff; padding:24px 28px; border-radius:12px;
-        width:min(340px,90vw); text-align:center; font-family:Inter,system-ui,sans-serif;
-        box-shadow:0 20px 60px rgba(0,0,0,.35); }
-      .login-card h2 { margin:0 0 4px; font-size:20px; font-weight:700; }
-      .login-card .sub { font-size:13px; color:#6b7280; margin-bottom:12px; }
-      #login-email { width:100%; padding:10px; font-size:14px; border:1px solid #d1d5db;
-        border-radius:8px; margin-bottom:10px; }
-      #login-btn { padding:8px 12px; border:none; border-radius:8px;
-        background:#2563eb; color:#fff; cursor:pointer; font-weight:600; }
-      #login-btn:hover { background:#1d4ed8; }`;
-     document.head.appendChild(style);
+      #login-modal-dynamic { 
+        position: fixed; inset: 0; 
+        background: rgba(17,24,39,.85);
+        display: flex; 
+        align-items: center; 
+        justify-content: center; 
+        z-index: 2147483647;
+        -webkit-app-region: no-drag;
+      }
+      #login-modal-dynamic .login-card { 
+        position: relative;
+        background: #fff; 
+        padding: 24px 28px; 
+        border-radius: 12px;
+        width: min(340px,90vw); 
+        text-align: center; 
+        font-family: Inter,system-ui,sans-serif;
+        box-shadow: 0 20px 60px rgba(0,0,0,.35);
+        -webkit-app-region: no-drag;
+      }
+      #login-modal-dynamic h2 { 
+        margin: 0 0 4px; 
+        font-size: 20px; 
+        font-weight: 700; 
+      }
+      #login-modal-dynamic .sub { 
+        font-size: 13px; 
+        color: #6b7280; 
+        margin-bottom: 12px; 
+      }
+      #login-modal-dynamic .input-wrap {
+        margin: 16px 0;
+      }
+      #login-email-dynamic { 
+        width: 100%; 
+        padding: 10px; 
+        font-size: 14px; 
+        border: 1px solid #d1d5db;
+        border-radius: 8px; 
+        margin-bottom: 10px;
+        background: #fff;
+        position: relative;
+        z-index: 2147483647;
+        -webkit-app-region: no-drag;
+        -webkit-user-select: text;
+        user-select: text;
+      }
+      #login-btn-dynamic { 
+        padding: 8px 12px; 
+        border: none; 
+        border-radius: 8px;
+        background: #2563eb; 
+        color: #fff; 
+        cursor: pointer; 
+        font-weight: 600;
+        width: 100%;
+      }
+      #login-btn-dynamic:hover { 
+        background: #1d4ed8; 
+      }`;
+    document.head.appendChild(style);
 
-      loginModal.querySelector("#login-btn").addEventListener("click", async () => {
-        const email = loginModal.querySelector("#login-email").value.trim();
-        if (!email) return alert("Please enter your email address.");
+      const emailInput = loginModal.querySelector("#login-email-dynamic");
+      const loginButton = loginModal.querySelector("#login-btn-dynamic");
+      
+      dbg("login-modal: elements initialized");
+
+      // Helper to validate email format
+      const isValidEmail = (email) => {
+        return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+      };
+
+      // Handle Enter key in email input 
+      emailInput.addEventListener("keydown", async (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          loginButton.click();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          hideLoginModal();
+        }
+      });
+
+      loginButton.addEventListener("click", async () => {
+        const email = emailInput.value.trim();
+        if (!email || !email.includes('@')) {
+          alert("Please enter a valid email address.");
+          emailInput.focus();
+          return;
+        }
+
+        // Disable input and button while logging in
+        emailInput.disabled = true;
+        loginButton.disabled = true;
+        loginButton.textContent = "Signing in...";
 
         dbg(`login: attempting for ${email}`);
         try {
           const res = await ipcRenderer.invoke("auth:login", { email });
-          if (!res?.ok) return alert(res?.error || "Login failed.");
+          if (!res?.ok) {
+            // Re-enable on error
+            emailInput.disabled = false;
+            loginButton.disabled = false;
+            loginButton.textContent = "Sign In";
+            return alert(res?.error || "Login failed.");
+          }
 
           state.authUser = res.user;
           dbg(`login -> ${res.user.email}`);
 
-          // Make sure any old picker is closed, then preload remote
-          hideProjectPicker();
-          try {
-            await loadRemoteSnapshotIntoState();
-            dbg("login: remote snapshot loaded");
-          } catch (x) {
-            dbg(`remote preload after login failed: ${x?.message || x}`);
-          }
-
+          // Hide login modal and show project picker
           hideLoginModal();
+          hideProjectPicker(); // Hide any existing picker first
+
+          // Reset state for next time
+          emailInput.disabled = false;
+          emailInput.value = "";
+          loginButton.disabled = false;
+          loginButton.textContent = "Sign In";
 
           // Immediately show picker after a successful login
           dbg("login: showing project picker now");
           ensureProjectPicker();
           showProjectPicker();
         } catch (e) {
+          // Re-enable on error
+          emailInput.disabled = false;
+          loginButton.disabled = false;
+          loginButton.textContent = "Sign In";
           alert(`Login error:\n${e?.message || e}`);
         }
       });
@@ -328,12 +470,72 @@ async function _wireDebugLogPathEarly() {
   }
 
   function showLoginModal() {
+    loginDbg("Showing login modal");
     ensureLoginModal();
+    
+    // Ensure modal exists and is properly configured before showing
+    if (!loginModal) {
+      loginDbg("ERROR: Modal creation failed");
+      return;
+    }
+    
+    // Reset state and clear any existing input values
+    const emailInput = loginModal.querySelector("#login-email-dynamic");
+    const loginButton = loginModal.querySelector("#login-btn-dynamic");
+    
+    if (!emailInput || !loginButton) {
+      loginDbg("ERROR: Required modal elements not found");
+      return;
+    }
+
+    // Reset input state
+    emailInput.value = "";
+    emailInput.disabled = false;
+    loginButton.disabled = false;
+    loginButton.textContent = "Sign In";
+    
+    // Show the modal
     loginModal.style.display = "flex";
+    
+    // Ensure modal is actually visible
+    if (loginModal.style.display !== "flex") {
+      loginDbg("ERROR: Failed to show modal");
+      return;
+    }
+
+    // Focus email input after a short delay to ensure modal is ready
+    setTimeout(() => {
+      try {
+        emailInput.focus();
+      } catch (e) {
+        loginDbg("Warning: Could not focus email input");
+      }
+    }, 100);
+    
+    loginDbg("Login modal shown successfully");
   }
 
   function hideLoginModal() {
-    if (loginModal) loginModal.style.display = "none";
+    if (!loginModal) {
+      loginDbg("No modal to hide");
+      return;
+    }
+
+    loginDbg("Hiding login modal");
+    
+    // Reset state when hiding
+    const emailInput = loginModal.querySelector("#login-email-dynamic");
+    const loginButton = loginModal.querySelector("#login-btn-dynamic");
+    
+    if (emailInput && loginButton) {
+      emailInput.value = "";
+      emailInput.disabled = false;
+      loginButton.disabled = false;
+      loginButton.textContent = "Sign In";
+    }
+
+    loginModal.style.display = "none";
+    loginDbg("Login modal hidden and state reset");
   }
 
   // Autosave tunables
@@ -436,6 +638,15 @@ async function _wireDebugLogPathEarly() {
   // Load first remote project (for the signed-in user) + its chapters (read-only)
   async function loadRemoteSnapshotIntoState() {
     if (!ipcRenderer) return;
+
+    // First check if sync is enabled
+    const syncEnabled = await ipcRenderer.invoke('sync:isEnabled')
+      .catch(() => false);
+    
+    if (!syncEnabled) {
+      dbg('Remote snapshot load skipped - DB sync is disabled');
+      return;
+    }
 
     // 1) list remote projects for current auth user
     const projRes = await ipcRenderer.invoke("projects:listRemote").catch(e => ({ ok:false, error:String(e) }));
@@ -704,12 +915,18 @@ function saveUIPrefsDebounced() {
         </div>
         <div style="width:320px;">
           <div style="font-weight:600; margin:8px 0;">Create New</div>
-          <div style="display:flex; gap:8px;">
-            <input id="pp-newname" placeholder="Project name" style="flex:1; padding:8px; border:1px solid #e5e7eb; border-radius:8px;"/>
-            <button id="pp-create" class="btn primary">Create</button>
-          </div>
-          <div style="font-size:12px; color:#6b7280; margin-top:6px;">
-            Projects are stored under your Documents/InkDoodleProjects folder.
+          <div class="create-form" style="display:flex; flex-direction:column; gap:8px;">
+            <div class="input-wrap" style="position:relative;">
+              <input id="pp-newname" placeholder="Project name" 
+                     style="width:100%; padding:8px; border:1px solid #e5e7eb; border-radius:8px; background:#fff;"/>
+              <div id="pp-error" style="color:#b91c1c; font-size:12px; position:absolute; left:0; top:100%; display:none;"></div>
+            </div>
+            <div style="display:flex; gap:8px;">
+              <button id="pp-create" class="btn primary" style="flex-grow:1;">Create Project</button>
+            </div>
+            <div style="font-size:12px; color:#6b7280;">
+              Projects are stored under your Documents/InkDoodleProjects folder.
+            </div>
           </div>
         </div>
       </div>
@@ -724,94 +941,549 @@ function saveUIPrefsDebounced() {
       #project-picker .btn:hover { background:#f9fafb; }
       #project-picker .btn.primary { background:#2563eb; color:#fff; border-color:#2563eb; }
       #project-picker .btn.primary:hover { background:#1d4ed8; }
+      #project-picker .btn:disabled { opacity:0.5; cursor:not-allowed; }
       .pp-item { border:1px solid #e5e7eb; border-radius:8px; padding:10px; display:flex; justify-content:space-between; align-items:center; }
       .pp-title { font-weight:600; }
       .pp-path { color:#6b7280; font-size:12px; }
       .pp-actions { display:flex; gap:8px; }
+      #project-picker .input-wrap { margin-bottom:16px; }
+      #project-picker #pp-error { margin-top:4px; min-height:20px; }
+      #project-picker input:disabled { background:#f3f4f6; cursor:not-allowed; }
     `;
     document.head.appendChild(style);
 
-    $("#pp-close").addEventListener("click", () => hideProjectPicker());
-    $("#pp-refresh").addEventListener("click", () => refreshProjectList());
-    $("#pp-saveback").addEventListener("click", async () => {
-      const res = await ipcRenderer.invoke("project:saveBack").catch(e=>({ok:false,error:String(e)}));
-      if (!res?.ok) return alert(`Save Back failed:\n${res?.error||"Unknown error"}`);
-      alert(`Workspace saved back to:\n${res.target}`);
-    });
-    $("#pp-create").addEventListener("click", async () => {
-      const name = $("#pp-newname").value.trim();
-      if (!name) return alert("Please enter a project name.");
-      const res = await ipcRenderer.invoke("project:new", { name }).catch(e=>({ok:false,error:String(e)}));
-      if (!res?.ok) return alert(`Create failed:\n${res?.error||"Unknown error"}`);
-      $("#pp-newname").value = "";
-      await refreshProjectList();
-    });
+      // Helper to show error message
+      const showError = (msg) => {
+        const error = $("#pp-error");
+        if (error) {
+          error.textContent = msg;
+          error.style.display = msg ? "block" : "none";
+        }
+      };
 
-    return picker;
+      // Helper to reset form state
+      const resetForm = () => {
+        const input = $("#pp-newname");
+        const createBtn = $("#pp-create");
+        if (input) {
+          input.value = "";
+          input.disabled = false;
+          input.style.pointerEvents = "auto";
+          input.style.background = "#fff";
+        }
+        if (createBtn) {
+          createBtn.disabled = false;
+          createBtn.textContent = "Create Project";
+        }
+        showError("");
+      };
+
+      $("#pp-close").addEventListener("click", () => {
+        resetForm();
+        hideProjectPicker();
+      });
+      
+      $("#pp-refresh").addEventListener("click", () => refreshProjectList());
+      
+      $("#pp-saveback").addEventListener("click", async () => {
+        if (!state.workspacePath || !state.currentProjectDir) return alert("No active project to save back.");
+        dbg("Saving project back to original directory...");
+        const res = await ipcRenderer.invoke("project:saveBack", { workspacePath: state.workspacePath, projectDir: state.currentProjectDir }).catch(e=>({ok:false,error:String(e)}));
+        if (!res?.ok) {
+          dbg(`Save back failed: ${res?.error || "Unknown error"}`);
+          return alert(`Save Back failed:\n${res?.error||"Unknown error"}`);
+        }
+        dbg(`Project saved back to: ${res.target || state.currentProjectDir}`);
+        alert(`Workspace saved back to:\n${res.target || state.currentProjectDir}`);
+      });
+
+      // Enhanced project creation with proper error handling
+      $("#pp-create").addEventListener("click", async () => {
+        const input = $("#pp-newname");
+        const createBtn = $("#pp-create");
+        const name = input?.value?.trim() || "";
+
+        if (!name) {
+          showError("Please enter a project name.");
+          input?.focus();
+          return;
+        }
+
+        dbg(`Creating new project "${name}"...`);
+
+        // Disable form while creating
+        input.disabled = true;
+        createBtn.disabled = true;
+        createBtn.textContent = "Creating...";
+        showError("");
+
+        async function ensureDirectoryExists(dir) {
+          if (!fs.existsSync(dir)) {
+            try {
+              fs.mkdirSync(dir, { recursive: true });
+              await new Promise(resolve => setTimeout(resolve, 100)); // Small delay after creation
+              if (!fs.existsSync(dir)) {
+                throw new Error(`Failed to create directory: ${dir}`);
+              }
+            } catch (err) {
+              throw new Error(`Failed to create directory ${dir}: ${err.message}`);
+            }
+          }
+        }
+
+        // Create initial project data structure
+        const initialProjectData = {
+          project: {
+            name: name,
+            title: name,
+            code: `PRJ-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            saved_at: new Date().toISOString(),
+            creator_id: state.authUser?.id || 1
+          },
+          entries: [],
+          ui: {
+            activeTab: "chapters",
+            selectedId: null,
+            counters: { chapter: 1, note: 1, reference: 1 },
+            mode: "theme",
+            theme: "slate",
+            bg: "aurora",
+            bgOpacity: 0.2,
+            bgBlur: 2,
+            editorDim: false
+          },
+          version: 1
+        };
+
+        try {
+          // Create the project directory
+          const createResult = await ipcRenderer.invoke("project:new", { 
+            name,
+            initialData: initialProjectData 
+          });
+          
+          if (!createResult?.ok) {
+            throw new Error(createResult?.error || 'Failed to create project');
+          }
+
+          // Ensure all required directories exist
+          if (createResult.projectPath) {
+            await ensureDirectoryExists(createResult.projectPath);
+            await ensureDirectoryExists(path.join(createResult.projectPath, 'data'));
+            await ensureDirectoryExists(path.join(createResult.projectPath, 'chapters'));
+            await ensureDirectoryExists(path.join(createResult.projectPath, 'notes'));
+            await ensureDirectoryExists(path.join(createResult.projectPath, 'refs'));
+            
+            // Ensure project.json exists
+            const projectFile = path.join(createResult.projectPath, 'data', 'project.json');
+            if (!fs.existsSync(projectFile)) {
+              fs.writeFileSync(projectFile, JSON.stringify(initialProjectData, null, 2));
+              await new Promise(resolve => setTimeout(resolve, 100)); // Small delay after write
+            }
+          } else {
+            throw new Error('No project path returned from creation');
+          }
+
+          // Success - reset form
+          resetForm();
+          dbg(`Created new project "${name}" with structure`);
+
+          // Wait for filesystem to catch up
+          await new Promise(resolve => setTimeout(resolve, 1000));
+
+          // Verify project structure
+          if (!fs.existsSync(createResult.projectPath)) {
+            throw new Error('Project directory was not created');
+          }
+
+          const dataDir = path.join(createResult.projectPath, 'data');
+          if (!fs.existsSync(dataDir)) {
+            fs.mkdirSync(dataDir, { recursive: true });
+          }
+
+          const projectFile = path.join(dataDir, 'project.json');
+          if (!fs.existsSync(projectFile)) {
+            fs.writeFileSync(projectFile, JSON.stringify(initialProjectData, null, 2));
+          }
+
+          // Create required folders
+          ['chapters', 'notes', 'refs'].forEach(dir => {
+            const dirPath = path.join(createResult.projectPath, dir);
+            if (!fs.existsSync(dirPath)) {
+              fs.mkdirSync(dirPath, { recursive: true });
+            }
+          });
+          
+          if (!createResult?.ok) {
+            throw new Error(createResult?.error || "Failed to create project");
+          }
+
+          // Success - reset form
+          resetForm();
+          dbg(`Created new project "${name}" with structure`);
+
+          // Ensure project directory exists before trying to load
+          if (createResult.projectPath) {
+            try {
+              if (!fs.existsSync(createResult.projectPath)) {
+                fs.mkdirSync(createResult.projectPath, { recursive: true });
+              }
+              const dataDir = path.join(createResult.projectPath, 'data');
+              if (!fs.existsSync(dataDir)) {
+                fs.mkdirSync(dataDir, { recursive: true });
+              }
+              // Write initial project.json
+              fs.writeFileSync(
+                path.join(dataDir, 'project.json'),
+                JSON.stringify(initialProjectData, null, 2),
+                'utf8'
+              );
+            } catch (err) {
+              throw new Error(`Failed to create project directories: ${err.message}`);
+            }
+          }
+
+          // Immediately try to load the new project
+          const loadResult = await ipcRenderer.invoke("project:load", { 
+            dir: createResult.projectPath 
+          }).catch(e => ({ok: false, error: String(e)}));
+
+          if (!loadResult?.ok) {
+            throw new Error(`Project created but failed to load: ${loadResult?.error || "Unknown error"}`);
+          }
+
+          // Update application state with the new project
+          state.workspacePath = loadResult.activePath;
+          state.currentProjectDir = loadResult.currentProjectDir || createResult.projectPath;
+          SAVE_FILE = path.join(state.workspacePath, "data", "project.json");
+
+          // Load the project data
+          await appLoadFromDisk();
+          hideProjectPicker();
+
+          dbg(`Successfully created and loaded new project "${name}"`);
+          showError(""); // Clear any errors
+        } catch (error) {
+          // Log error but allow retry
+          dbg(`Project creation/load failed: ${error.message}`);
+          alert(`Failed to create/load project:\n${error.message}`);
+
+          // Re-enable the form
+          input.disabled = false;
+          createBtn.disabled = false;
+          createBtn.textContent = "Create Project";
+          input.focus();
+          
+          // Try to refresh list anyway to show any partial success
+          try {
+            await refreshProjectList();
+          } catch (refreshError) {
+            dbg(`Warning: Project list refresh failed: ${refreshError.message}`);
+          }
+        }
+      });
+
+      // Add keyboard handling for the input
+      $("#pp-newname")?.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          $("#pp-create")?.click();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          hideProjectPicker();
+        }
+        showError(""); // Clear error on typing
+      });    return picker;
   }
 
-  function showProjectPicker() {
+  async function showProjectPicker() {
     ensureProjectPicker();
+    // Ensure the picker accepts pointer events and is visible
+    picker.style.pointerEvents = "auto";
     picker.style.display = "flex";
+    
+    // Just refresh the project list immediately
     refreshProjectList();
+
+    // Reset and focus the new-project input
+    const inp = document.querySelector("#pp-newname");
+    if (inp) {
+      inp.value = ""; // Clear any previous value
+      inp.disabled = false; // Ensure enabled
+      inp.style.pointerEvents = "auto"; // Ensure clickable
+      
+      // Focus after a short delay to avoid timing issues
+      setTimeout(() => {
+        try {
+          inp.focus();
+          if (typeof inp.setSelectionRange === "function") {
+            inp.setSelectionRange(0, inp.value?.length || 0);
+          }
+        } catch (e) { /* ignore focus failures */ }
+      }, 50);
+    }
   }
   function hideProjectPicker() {
     if (!picker) return;
+    
+    // Reset all button states
+    const buttons = picker.querySelectorAll("button");
+    buttons.forEach(btn => {
+      btn.disabled = false;
+      if (btn.id === "pp-create") btn.textContent = "Create Project";
+      else if (btn.id === "pp-refresh") btn.textContent = "Refresh";
+      else if (btn.getAttribute("data-act") === "load") btn.textContent = "Load";
+    });
+    
+    // Reset form state
+    const input = $("#pp-newname");
+    const error = $("#pp-error");
+    
+    if (input) {
+      input.value = "";
+      input.disabled = false;
+      input.style.pointerEvents = "auto";
+      input.style.background = "#fff";
+    }
+    if (error) {
+      error.style.display = "none";
+      error.textContent = "";
+    }
+    
+    // Finally hide the picker
     picker.style.display = "none";
+    dbg("Project picker closed and reset");
   }
 
   async function refreshProjectList() {
     const rootEl = $("#pp-root");
     const listEl = $("#pp-list");
-    rootEl.textContent = "Loading…";
-    listEl.innerHTML = "";
+    const refreshBtn = $("#pp-refresh");
+    let projectResponse = null;
+    
+    try {
+      // Disable refresh button while loading
+      if (refreshBtn) {
+        refreshBtn.disabled = true;
+        refreshBtn.textContent = "Loading...";
+      }
+      
+      rootEl.textContent = "Loading…";
+      listEl.innerHTML = "";
+      dbg("Refreshing project list...");
 
-    const res = await ipcRenderer.invoke("project:list").catch(e=>({ok:false,error:String(e)}));
-    if (!res?.ok) {
+      projectResponse = await ipcRenderer.invoke("project:list").catch(e=>({ok:false,error:String(e)}));
+      if (!projectResponse?.ok) {
+        throw new Error(projectResponse?.error || "Failed to list projects");
+      }
+
+      rootEl.textContent = projectResponse.root;
+      dbg(`Found ${projectResponse.items.length} projects in ${projectResponse.root}`);
+
+      if (!projectResponse.items.length) {
+        listEl.innerHTML = `
+          <div class="pp-item">
+            <div>No projects yet. Create one on the right.</div>
+          </div>`;
+        return;
+      }
+
+      // Render each project in the list
+      for (const item of projectResponse.items) {
+        // Try to load project.json to get display title
+        if (!item || !item.dir) {
+          dbg(`Warning: Invalid project item in list: ${JSON.stringify(item)}`);
+          continue;
+        }
+        let displayTitle = item.name;
+        try {
+          const projectFile = path.join(item.dir, 'data', 'project.json');
+          if (fs.existsSync(projectFile)) {
+            const data = JSON.parse(fs.readFileSync(projectFile, 'utf8'));
+            displayTitle = data.project?.title || data.project?.name || item.name;
+          }
+        } catch (e) {
+          dbg(`Warning: Could not read project title from ${item.dir}: ${e.message}`);
+        }
+
+        const row = document.createElement("div");
+        row.className = "pp-item";
+        row.innerHTML = `
+          <div>
+            <div class="pp-title">${displayTitle}</div>
+            <div class="pp-path">${item.dir}</div>
+          </div>
+          <div class="pp-actions">
+            <button class="btn" data-act="load">Load</button>
+            <button class="btn" data-act="delete">Delete</button>
+          </div>
+        `;
+
+        // Add click handlers
+        const loadBtn = row.querySelector('[data-act="load"]');
+        const deleteBtn = row.querySelector('[data-act="delete"]');
+
+        loadBtn.addEventListener("click", async () => {
+          try {
+            loadBtn.disabled = true;
+            loadBtn.textContent = "Loading...";
+            
+            // Verify project data exists and is valid
+            const projectFile = path.join(item.dir, 'data', 'project.json');
+            if (!fs.existsSync(projectFile)) {
+              throw new Error('Project data not found. The project may be corrupted.');
+            }
+
+            try {
+              const projectData = JSON.parse(fs.readFileSync(projectFile, 'utf8'));
+              
+              // If in legacy format, convert it
+              if (!projectData.entries && (projectData.chapters || projectData.notes || projectData.refs)) {
+                const migrated = {
+                  project: {
+                    name: projectData.project?.title || item.name,
+                    title: projectData.project?.title || item.name,
+                    code: projectData.project?.code || `PRJ-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                    created_at: projectData.saved_at || new Date().toISOString(),
+                    updated_at: projectData.saved_at || new Date().toISOString(),
+                    saved_at: projectData.saved_at || new Date().toISOString(),
+                    creator_id: projectData.project?.creator_id || 1
+                  },
+                  entries: [],
+                  ui: {
+                    ...(projectData.ui || {}),
+                    mode: "theme",
+                    theme: "slate",
+                    bg: "aurora",
+                    bgOpacity: 0.2,
+                    bgBlur: 2,
+                    editorDim: false
+                  },
+                  version: projectData.version || 1
+                };
+
+                // Convert legacy entries
+                if (projectData.chapters?.added) {
+                  migrated.entries.push(
+                    ...projectData.chapters.added.map(ch => ({
+                      type: 'chapter',
+                      id: ch.id || `ch-${Math.random().toString(36).slice(2, 8)}`,
+                      title: ch.title || 'Untitled Chapter',
+                      status: ch.status || 'draft',
+                      tags: ch.tags || [],
+                      synopsis: ch.synopsis || '',
+                      body: ch.body || '',
+                      order_index: ch.order_index || 0,
+                      updated_at: ch.updated_at || projectData.saved_at || new Date().toISOString()
+                    }))
+                  );
+                }
+
+                // Write back the migrated format
+                fs.writeFileSync(projectFile, JSON.stringify(migrated, null, 2));
+                projectData = migrated;
+              }
+
+              if (!projectData.project || !projectData.project.title) {
+                throw new Error('Invalid project data format: missing project info');
+              }
+            } catch (parseError) {
+              throw new Error(`Could not read project data: ${parseError.message}`);
+            }
+
+            // Save current project if needed
+            if (state.workspacePath && state.currentProjectDir) {
+              dbg(`Saving current project before switch...`);
+              
+              // First save to workspace
+              try {
+                saveToDisk();
+              } catch (saveError) {
+                dbg(`Warning: Failed to save workspace: ${saveError.message}`);
+              }
+              
+              // Then save back to project directory
+              const sb = await ipcRenderer.invoke("project:saveBack", { 
+                workspacePath: state.workspacePath, 
+                projectDir: state.currentProjectDir 
+              }).catch(e=>({ok:false,error:String(e)}));
+              
+              if (!sb?.ok) {
+                const continueAnyway = confirm(
+                  `Warning: Failed to save current project:\n${sb?.error || 'Unknown error'}\n\nContinue loading new project anyway?`
+                );
+                if (!continueAnyway) {
+                  loadBtn.disabled = false;
+                  loadBtn.textContent = "Load";
+                  return;
+                }
+              }
+              
+              // Force sync changes to DB
+              try {
+                await ipcRenderer.invoke("project:sync", {
+                  dir: state.currentProjectDir
+                });
+                dbg("Successfully synced changes to DB");
+              } catch (syncError) {
+                dbg(`Warning: Failed to sync to DB: ${syncError.message}`);
+              }
+            }
+
+            // Load the project
+            dbg(`Loading project from ${item.dir}...`);
+            const r = await ipcRenderer.invoke("project:load", { dir: item.dir })
+              .catch(e=>({ok:false,error:String(e)}));
+              
+            if (!r?.ok) throw new Error(r?.error || "Unknown error");
+
+            // Update state with new project info
+            state.workspacePath = r.activePath;
+            state.currentProjectDir = r.currentProjectDir || item.dir;
+            SAVE_FILE = path.join(state.workspacePath, "data", "project.json");
+
+            await appLoadFromDisk();
+            hideProjectPicker();
+            dbg(`Successfully loaded project from ${item.dir}`);
+          } catch (error) {
+            dbg(`Project load failed: ${error.message}`);
+            alert(`Failed to load project:\n${error.message}`);
+            loadBtn.disabled = false;
+            loadBtn.textContent = "Load";
+          }
+        });
+
+        deleteBtn.addEventListener("click", async () => {
+          if (!confirm(`Delete project "${displayTitle}"?\nThis removes the folder:\n${item.dir}`)) return;
+          try {
+            deleteBtn.disabled = true;
+            deleteBtn.textContent = "Deleting...";
+            const r = await ipcRenderer.invoke("project:delete", { dir: item.dir })
+              .catch(e=>({ok:false,error:String(e)}));
+            if (!r?.ok) throw new Error(r?.error || "Unknown error");
+            await refreshProjectList();
+          } catch (error) {
+            dbg(`Project deletion failed: ${error.message}`);
+            alert(`Delete failed:\n${error.message}`);
+            deleteBtn.disabled = false;
+            deleteBtn.textContent = "Delete";
+          }
+        });
+
+        listEl.appendChild(row);
+      }
+    } catch (error) {
+      dbg(`Failed to refresh project list: ${error.message}`);
       rootEl.textContent = "Failed to list projects.";
-      alert(res?.error||"Unknown error");
-      return;
-    }
-    rootEl.textContent = res.root;
-
-    if (!res.items.length) {
-      listEl.innerHTML = `<div class="pp-item"><div>No projects yet. Create one on the right.</div></div>`;
-      return;
-    }
-
-    for (const item of res.items) {
-      const row = document.createElement("div");
-      row.className = "pp-item";
-      row.innerHTML = `
-        <div>
-          <div class="pp-title">${item.name}</div>
-          <div class="pp-path">${item.dir}</div>
-        </div>
-        <div class="pp-actions">
-          <button class="btn" data-act="load">Load</button>
-          <button class="btn" data-act="delete">Delete</button>
-        </div>
-      `;
-      row.querySelector('[data-act="load"]').addEventListener("click", async () => {
-        const r = await ipcRenderer.invoke("project:load", { dir: item.dir }).catch(e=>({ok:false,error:String(e)}));
-        if (!r?.ok) return alert(`Load failed:\n${r?.error||"Unknown error"}`);
-
-        // use returned activePath/currentProjectDir
-        state.workspacePath = r.activePath;
-        state.currentProjectDir = r.currentProjectDir || item.dir;
-        SAVE_FILE = path.join(state.workspacePath, "data", "project.json");
-
-        await appLoadFromDisk(); // load from workspace
-        hideProjectPicker();
-        dbg(`Switched project: workspace -> ${state.workspacePath}`);
-      });
-      row.querySelector('[data-act="delete"]').addEventListener("click", async () => {
-        if (!confirm(`Delete project "${item.name}"?\nThis removes the folder:\n${item.dir}`)) return;
-        const r = await ipcRenderer.invoke("project:delete", { dir: item.dir }).catch(e=>({ok:false,error:String(e)}));
-        if (!r?.ok) return alert(`Delete failed:\n${r?.error||"Unknown error"}`);
-        await refreshProjectList();
-      });
-      listEl.appendChild(row);
+      alert(error.message || "Unknown error occurred while listing projects");
+    } finally {
+      // Always re-enable refresh button
+      if (refreshBtn) {
+        refreshBtn.disabled = false;
+        refreshBtn.textContent = "Refresh";
+      }
     }
   }
 
@@ -1070,21 +1742,80 @@ function saveUIPrefsDebounced() {
   function createEntry(kind) {
     const type = kind;
     const order_index = state.entries.filter(e => e.type === type).length;
+    
+    // Increment counter for this type first
+    state.counters[type] = (state.counters[type] || 0) + 1;
+    const count = state.counters[type];
+    
+    // Generate a unique ID for the new entry
+    const timestamp = Date.now();
+    const uniqueId = `${type}-${timestamp}-${uid()}`;
+    
     const entry = {
-      id: uid(), type, title: defaultUntitled(type),
-      updated_at: nowISO(), order_index, body: "", tags: []
+      id: uniqueId,
+      type,
+      title: type === "chapter" ? `Chapter ${count}` :
+             type === "note" ? `Note ${count}` :
+             `Reference ${count}`,
+      updated_at: nowISO(),
+      created_at: nowISO(),
+      order_index,
+      body: "",
+      tags: []
     };
-    if (type === "chapter") { entry.status = "Draft"; entry.synopsis = ""; entry.word_target = 0; }
-    else if (type === "note") { entry.category = "Misc"; entry.pinned = false; }
-    else { entry.reference_type = "Glossary"; entry.summary = ""; entry.source_link = ""; }
+    
+    // Add type-specific fields
+    if (type === "chapter") {
+      entry.status = "Draft";
+      entry.synopsis = ""; 
+      entry.word_goal = 0;
+      // Add any other chapter-specific fields
+      dbg(`chapter:create — Creating new chapter "${entry.title}" with ID ${entry.id}`);
+    }
+    else if (type === "note") {
+      entry.category = "Misc";
+      entry.pinned = false;
+      dbg(`note:create — Creating new note "${entry.title}" with ID ${entry.id}`);
+    }
+    else { 
+      entry.reference_type = "Glossary";
+      entry.summary = "";
+      entry.source_link = "";
+      dbg(`reference:create — Creating new reference "${entry.title}" with ID ${entry.id}`);
+    }
 
+    // Add to state.entries with proper project code if available
+    entry.project_code = state.project?.code;
     state.entries.push(entry);
+    
+    // Switch to correct tab if needed
     const target = typeTabMap[type];
-    if (state.activeTab !== target) switchTab(target);
-    selectEntry(entry.id);
-    el.titleInput?.focus();
+    if (state.activeTab !== target) {
+      dbg(`Tab switch needed for new ${type}: ${state.activeTab} -> ${target}`);
+      switchTab(target);
+    }
+    
+    // Update state and select the new entry
+    state.selectedId = entry.id;
+    
+    // Normalize order indices after adding the new entry
+    normalizeOrderIndexes();
+    
+    // Update UI
+    renderList();
+    populateEditor(entry);
+    
+    // Focus the title input after a short delay to ensure the editor is ready
+    setTimeout(() => {
+      if (el.titleInput) {
+        el.titleInput.focus();
+        el.titleInput.select();
+      }
+    }, 50);
+
+    // Save changes
     touchSave(true);
-    dbg(`created ${type} "${entry.title}" and selected it`);
+    dbg(`created ${type} "${entry.title}" (ID: ${entry.id}) and selected it - pending save`);
   }
 
   // ───────────────── Tabs ─────────────────
@@ -1176,22 +1907,30 @@ function saveUIPrefsDebounced() {
   }
 
   function collectProjectData() {
+    // First ensure all entries have required fields
+    state.entries = state.entries.map(entry => {
+      if (!entry.updated_at) entry.updated_at = nowISO();
+      if (!entry.order_index) entry.order_index = 0;
+      return entry;
+    });
+
+    // Update the currently selected entry
     const cur = state.entries.find(e => e.id === state.selectedId);
     if (cur) {
       cur.title = el.titleInput?.value || cur.title;
       if (cur.type === "chapter") {
-      cur.status = el.status?.value || "Draft";
-      cur.tags = parseTags(el.tags?.value);
-      cur.synopsis = el.synopsis?.value || "";
-      cur.body = el.body?.value || "";
-      // persist word goal
-      if (el.wordGoal) {
-        const g = parseInt(el.wordGoal.value, 10);
-        cur.word_goal = Number.isFinite(g) && g > 0 ? g : 0;
-      }
-      } else if (cur.type === "note") {
+        cur.status = el.status?.value || "Draft";
         cur.tags = parseTags(el.tags?.value);
-        cur.category = el.noteCategory?.value || "Misc";
+        cur.synopsis = el.synopsis?.value || "";
+        cur.body = el.body?.value || "";
+        // persist word goal
+        if (el.wordGoal) {
+          const g = parseInt(el.wordGoal.value, 10);
+          cur.word_goal = Number.isFinite(g) && g > 0 ? g : 0;
+        }
+      } else if (cur.type === "note") {
+        cur.tags = parseTags(el.tags?.value || '');
+        cur.category = el.noteCategory?.value?.trim() || "Misc";
         cur.pinned = !!el.notePin?.checked;
         cur.body = el.body?.value || "";
       } else if (cur.type === "reference") {
@@ -1203,16 +1942,27 @@ function saveUIPrefsDebounced() {
       }
       cur.updated_at = nowISO();
     }
+
+    // Get project info
     state.projectName = (el.projectName?.textContent || "").trim() || "Untitled Project";
 
+    // No change tracking - just get the current project code
+    const projectCode = state.project?.code;
+
     return {
-      project: { name: state.projectName, saved_at: nowISO() },
+      project: { 
+        title: state.projectName,
+        name: state.projectName,
+        code: projectCode, // Preserve project code if it exists
+        saved_at: nowISO(),
+        updated_at: nowISO()
+      },
       entries: state.entries.map(stripUndefined),
       ui: {
         activeTab: state.activeTab,
         selectedId: state.selectedId,
         counters: state.counters,
-        // persist UI prefs (including mode)
+        // persist UI prefs
         mode: state.uiPrefs.mode,
         theme: state.uiPrefs.theme,
         bg: state.uiPrefs.bg,
@@ -1220,25 +1970,176 @@ function saveUIPrefsDebounced() {
         bgBlur: state.uiPrefs.bgBlur,
         editorDim: state.uiPrefs.editorDim,
       },
-      version: 1,
+      version: 1
     };
   }
 
-  function saveToDisk() {
+  // Track changes for DB sync
+  function getOrCreateChanges() {
+    // Read current changes from project.json
+    if (fs && path && SAVE_FILE) {
+      try {
+        const dir = path.dirname(SAVE_FILE);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        if (fs.existsSync(SAVE_FILE)) {
+          const data = JSON.parse(fs.readFileSync(SAVE_FILE, 'utf8'));
+          if (data.chapters && data.notes && data.refs) {
+            return {
+              chapters: data.chapters,
+              notes: data.notes,
+              refs: data.refs
+            };
+          }
+        }
+      } catch (e) {
+        dbg(`Warning: Could not read changes from disk: ${e?.message || e}`);
+      }
+    }
+    // Return empty changes if file doesn't exist or is invalid
+    return {
+      chapters: { added: [], updated: [], deleted: [] },
+      notes: { added: [], updated: [], deleted: [] },
+      refs: { added: [], updated: [], deleted: [] }
+    };
+  }
+
+  async function saveToDisk(syncToDb = false) {
     if (!fs || !path || !SAVE_FILE) {
       const msg = "Save disabled: no workspace path. Load/create a project first.";
       dbg(msg); alert(msg); return;
     }
     try {
+      // Ensure project directory exists
+      if (SAVE_FILE) {
+        const projectDir = path.dirname(SAVE_FILE);
+        if (!fs.existsSync(projectDir)) {
+          fs.mkdirSync(projectDir, { recursive: true });
+          dbg(`workspace:save — Created project directory: ${projectDir}`);
+        }
+        
+        // Track changes for DB sync if needed
+        if (syncToDb && ipcRenderer) {
+          const result = await ipcRenderer.invoke('db:trackChanges', {
+            entries: state.entries,
+            projectDir
+          });
+          if (!result?.ok) {
+            dbg(`workspace:save — Warning: Failed to track changes for DB sync: ${result?.error}`);
+          }
+        }
+      }
+
+      // Initialize project data
       const data = collectProjectData();
+      
+      // Initialize empty project structure if it doesn't exist
+      if (SAVE_FILE && !fs.existsSync(SAVE_FILE)) {
+        const projectRootDir = path.dirname(path.dirname(SAVE_FILE)); // Go up two levels from project.json to get root
+        const dataDir = path.dirname(SAVE_FILE); // Just the data directory for project.json
+        
+        // Create data directory for project.json
+        if (!fs.existsSync(dataDir)) {
+          fs.mkdirSync(dataDir, { recursive: true });
+        }
+        
+        // Create base directories at project root
+        ['chapters', 'notes', 'refs'].forEach(dir => {
+          const fullPath = path.join(projectRootDir, dir);
+          if (!fs.existsSync(fullPath)) {
+            fs.mkdirSync(fullPath, { recursive: true });
+          }
+        });
+        
+        // Initialize empty project.json
+        const initialData = {
+          project: {
+            title: state.projectName || "Untitled Project",
+            name: state.projectName || "Untitled Project",
+            created_at: nowISO(),
+            updated_at: nowISO(),
+            saved_at: nowISO()
+          },
+          entries: [],
+          ui: {
+            activeTab: "chapters",
+            selectedId: null,
+            counters: { chapter: 1, note: 1, reference: 1 }
+          },
+          version: 1
+        };
+        
+        fs.writeFileSync(SAVE_FILE, JSON.stringify(initialData, null, 2), "utf8");
+        dbg(`workspace:save — Initialized new project structure at: ${projectDir}`);
+      }
+
+      // Update changes tracking for new items
+      const changes = getOrCreateChanges();
+      
+      // Process each type of entry
+      state.entries.forEach(entry => {
+        const type = entry.type === 'chapter' ? 'chapters' : 
+                    entry.type === 'note' ? 'notes' : 'refs';
+                    
+        // Track the project code if it exists
+        if (data.project && data.project.code) {
+          entry.project_code = data.project.code;
+        }
+                    
+        // If entry has no id/code, it's new
+        if (!entry.id && !entry.code) {
+          const changeList = changes[type].added;
+          if (!changeList.some(e => e.title === entry.title)) {
+            changeList.push(entry);
+          }
+        } 
+        // If it has an id/code but was modified, track update
+        else if (entry.updated_at > state.lastSavedAt) {
+          const changeList = changes[type].updated;
+          const idx = changeList.findIndex(e => e.id === entry.id || e.code === entry.code);
+          if (idx >= 0) changeList[idx] = entry;
+          else changeList.push(entry);
+        }
+      });
+
+      // Save entries to individual files
+      const projectRootDir = path.dirname(path.dirname(SAVE_FILE)); // Go up two levels from project.json to get root
+      
+      // Handle new and updated entries
+      for (const entry of state.entries) {
+        const type = entry.type === 'chapter' ? 'chapters' : 
+                    entry.type === 'note' ? 'notes' : 'refs';
+                    
+        // Create type directory if it doesn't exist
+        const typeDir = path.join(projectRootDir, type);
+        if (!fs.existsSync(typeDir)) {
+          fs.mkdirSync(typeDir, { recursive: true });
+        }
+        
+        // Save each entry to its own file
+        const entryFile = path.join(typeDir, `${entry.id}.json`);
+        fs.writeFileSync(entryFile, JSON.stringify(entry, null, 2), "utf8");
+      }
+      
+      // Update project.json without the change tracking arrays
+      data.entries = state.entries;
+      delete data.chapters;
+      delete data.notes;
+      delete data.refs;
+
+      // Ensure project.json directory exists
       ensureDir(SAVE_FILE);
+      
+      // Log save operation
+      dbg(`workspace:save — Saving ${state.entries.length} total entries to individual files`);
+      
+      // Save updated project.json
       fs.writeFileSync(SAVE_FILE, JSON.stringify(data, null, 2), "utf8");
       const t = new Date();
       el.lastSaved && (el.lastSaved.textContent = `Last saved • ${t.toLocaleTimeString()}`);
       el.saveState && (el.saveState.textContent = "Saved");
       state.dirty = false;
       state.lastSavedAt = Date.now();
-      dbg(`Saved OK → ${SAVE_FILE}`);
+      dbg(`workspace:save — Successfully saved all changes to ${SAVE_FILE}`);
       renderList();
     } catch (err) {
       console.error(err);
@@ -1248,11 +2149,70 @@ function saveUIPrefsDebounced() {
   }
 
   async function appLoadFromDisk() {
-    if (!fs || !path || !SAVE_FILE) { dbg("Load skipped: no workspace path"); return; }
+    if (!fs || !path || !SAVE_FILE) { 
+      dbg("Load skipped: no workspace path"); 
+      return; 
+    }
+    
     try {
-      if (!fs.existsSync(SAVE_FILE)) { dbg("No project.json in workspace; starting fresh"); return; }
-      const raw = fs.readFileSync(SAVE_FILE, "utf8");
-      const data = JSON.parse(raw);
+      if (!fs.existsSync(SAVE_FILE)) { 
+        dbg("No project.json in workspace; starting fresh"); 
+        return; 
+      }
+      
+      // Read project.json and entry files
+      let data = null;
+      try {
+        if (!fs.existsSync(SAVE_FILE)) {
+          dbg(`workspace:load — Project file does not exist: ${SAVE_FILE}`);
+          throw new Error('Project file not found. Please create a new project.');
+        }
+
+        const raw = fs.readFileSync(SAVE_FILE, "utf8");
+        data = JSON.parse(raw);
+        
+        // Basic format validation
+        if (!data || typeof data !== 'object') {
+          throw new Error('Invalid project data format: not a JSON object');
+        }
+        if (!data.project || typeof data.project !== 'object') {
+          throw new Error('Invalid project data format: missing or invalid project info');
+        }
+        
+        // Load entries from individual files
+        const projectRootDir = path.dirname(path.dirname(SAVE_FILE)); // Go up two levels from project.json to get root
+        const entryTypes = ['chapters', 'notes', 'refs'];
+        const entries = [];
+        
+        for (const type of entryTypes) {
+          const typeDir = path.join(projectRootDir, type);
+          if (fs.existsSync(typeDir)) {
+            const files = fs.readdirSync(typeDir).filter(f => f.endsWith('.json'));
+            for (const file of files) {
+              try {
+                const entryPath = path.join(typeDir, file);
+                const entryData = JSON.parse(fs.readFileSync(entryPath, 'utf8'));
+                entries.push(entryData);
+              } catch (entryError) {
+                dbg(`Warning: Failed to load entry file ${file}: ${entryError.message}`);
+              }
+            }
+          }
+        }
+        
+        // Add loaded entries to data
+        data.entries = entries;
+        
+        // Validate project structure
+        const requiredFields = ['title', 'name', 'saved_at', 'updated_at'];
+        const missing = requiredFields.filter(field => !data.project[field]);
+        if (missing.length) {
+          throw new Error(`Invalid project data format: missing required fields: ${missing.join(', ')}`);
+        }
+      } catch (parseError) {
+        dbg(`Error parsing project data: ${parseError.message}`);
+        throw new Error('Project data is corrupted or in invalid format');
+      }
 
       state.projectName = data?.project?.name || "Untitled Project";
       if (el.projectName) el.projectName.textContent = state.projectName;
@@ -1313,11 +2273,67 @@ function saveUIPrefsDebounced() {
       }
     }, AUTOSAVE_FAILSAFE_MS / 2);
   }
+  // Save to both workspace and project directory
+  async function saveToWorkspaceAndProject() {
+    if (!state.dirty) {
+      dbg(`workspace:save — No changes to save`);
+      return;
+    }
+    
+    try {
+      dbg(`workspace:save — Starting save of workspace changes`);
+      saveToDisk(); // Ensure changes are written to disk first
+      
+      dbg(`db:sync — Starting sync of workspace changes to DB`);
+      const changes = getOrCreateChanges();
+      
+      // Log what we're about to sync
+      const totalChanges = (changes.chapters.added.length + changes.chapters.updated.length) +
+                         (changes.notes.added.length + changes.notes.updated.length) +
+                         (changes.refs.added.length + changes.refs.updated.length);
+      
+      dbg(`db:sync — Found ${totalChanges} total changes to sync:`);
+      dbg(`db:sync — Chapters: ${changes.chapters.added.length} new, ${changes.chapters.updated.length} updates`);
+      dbg(`db:sync — Notes: ${changes.notes.added.length} new, ${changes.notes.updated.length} updates`);
+      dbg(`db:sync — References: ${changes.refs.added.length} new, ${changes.refs.updated.length} updates`);
+      dbg("Saving to workspace...");
+      saveToDisk(); // Save to workspace first
+      
+      if (!SAVE_FILE) {
+        dbg("No workspace file to save back to project");
+        return;
+      }
+      
+      dbg("Saving workspace back to project directory...");
+      const r = await ipcRenderer.invoke("project:save-back", {
+        workspaceFile: SAVE_FILE
+      }).catch(e => ({ ok: false, error: String(e) }));
+      
+      if (!r?.ok) {
+        throw new Error(r?.error || "Failed to save back to project");
+      }
+      
+      dbg("Successfully saved workspace back to project directory");
+    } catch (err) {
+      console.error(err);
+      dbg(`Error saving to project: ${err.message}`);
+      throw err;
+    }
+  }
+
   function touchSave() {
     markDirty();
+    dbg(`workspace:autosave — Changes detected, scheduling save`);
     scheduleAutosave();
     clearTimeout(_fakeAutosaveUI);
     _fakeAutosaveUI = setTimeout(() => {
+      const changes = getOrCreateChanges();
+      const totalChanges = 
+        changes.chapters.added.length + changes.chapters.updated.length +
+        changes.notes.added.length + changes.notes.updated.length +
+        changes.refs.added.length + changes.refs.updated.length;
+      dbg(`workspace:autosave — Pending changes: ${totalChanges} total`);
+      // Continue with UI update
       el.saveState && (el.saveState.textContent = state.dirty ? "Unsaved (autosave) …" : "Autosaved");
     }, 800);
   }
@@ -1577,11 +2593,66 @@ el.wordGoal?.addEventListener("input", () => {
   const logoutBtn = document.getElementById("logout-btn");
   if (logoutBtn && ipcRenderer) {
     logoutBtn.addEventListener("click", async () => {
+      if (!confirm("Logout will remove the current project directory and workspace from this machine. Continue?")) return;
       try {
-        const r = await ipcRenderer.invoke("auth:logout");
-        if (!r?.ok) return alert(`Logout failed: ${r?.error || "Unknown error"}`);
-        // Quick way to return to login screen with clean state:
-        location.reload();
+        // First try to save current state
+        if (state.dirty && state.workspacePath) {
+          dbg("Saving current state before logout");
+          try {
+            saveToDisk();
+          } catch (e) {
+            dbg(`Warning: Failed to save before logout: ${e?.message || e}`);
+          }
+        }
+
+        if (!state.workspacePath) {
+          dbg("No workspace path available for logout");
+        } else {
+          dbg(`Active workspace for logout: ${state.workspacePath}`);
+          dbg(`Project directory: ${state.currentProjectDir || '(none)'}`);
+        }
+
+        // First save workspace and project if needed
+        if (state.dirty) {
+          dbg("Saving workspace and project before logout...");
+          await saveToWorkspaceAndProject();
+        }
+
+        // Try to save to DB
+        const r = await ipcRenderer.invoke("auth:logout", { 
+          projectPath: state.workspacePath || null,
+          workspaceExists: state.workspacePath ? fs.existsSync(state.workspacePath) : false 
+        });
+        
+        if (!r?.ok) {
+          const error = r?.error || "Unknown error";
+          dbg(`Logout failed: ${error}`);
+          return alert(`Logout failed: ${error}`);
+        }
+
+        dbg("Logout successful, clearing local state");
+        // Clear all state
+        state.authUser = null;
+        state.workspacePath = null;
+        state.currentProjectDir = null;
+        SAVE_FILE = null;
+
+        // Remove the existing login modal if it exists
+        const oldModal = document.getElementById("login-modal-dynamic");
+        if (oldModal) {
+          oldModal.remove();
+        }
+        loginModal = null; // Force recreation of login modal
+
+        // Hide any open pickers/modals
+        hideProjectPicker();
+        hideLoginModal();
+
+        // Small delay to ensure DOM is ready
+        setTimeout(() => {
+          ensureLoginModal();
+          showLoginModal();
+        }, 100);
       } catch (err) {
         alert(`Logout error: ${err?.message || err}`);
       }
@@ -1607,9 +2678,10 @@ el.wordGoal?.addEventListener("input", () => {
     // Save Back to Documents project
     if (mod && e.shiftKey && e.key.toLowerCase() === "s") {
       e.preventDefault();
-      const res = await ipcRenderer.invoke("project:saveBack").catch(err=>({ok:false,error:String(err)}));
-      if (!res?.ok) return alert(`Save Back failed:\n${res?.error||"Unknown error"}`);
-      alert(`Workspace saved back to:\n${res.target}`);
+      if (!state.workspacePath || !state.currentProjectDir) return alert("No active project to save back.");
+      const res = await ipcRenderer.invoke("project:saveBack", { workspacePath: state.workspacePath, projectDir: state.currentProjectDir }).catch(err=>({ok:false,error:String(err)}));
+  if (!res?.ok) return alert(`Save Back failed:\n${res?.error||"Unknown error"}`);
+  alert(`Workspace saved back to:\n${res.target || state.currentProjectDir}`);
     }
 
     // Open Project Picker
@@ -1662,9 +2734,10 @@ el.wordGoal?.addEventListener("input", () => {
   if (ipcRenderer) {
     ipcRenderer.on("menu:save", () => { saveToDisk(); });
     ipcRenderer.on("menu:saveBack", async () => {
-      const res = await ipcRenderer.invoke("project:saveBack").catch(err => ({ ok:false, error:String(err) }));
-      if (!res?.ok) return alert(`Save Back failed:\n${res?.error||"Unknown error"}`);
-      alert(`Workspace saved back to:\n${res.target}`);
+      if (!state.workspacePath || !state.currentProjectDir) return alert("No active project to save back.");
+      const res = await ipcRenderer.invoke("project:saveBack", { workspacePath: state.workspacePath, projectDir: state.currentProjectDir }).catch(err => ({ ok:false, error:String(err) }));
+  if (!res?.ok) return alert(`Save Back failed:\n${res?.error||"Unknown error"}`);
+  alert(`Workspace saved back to:\n${res.target || state.currentProjectDir}`);
     });
     ipcRenderer.on("menu:openPicker", () => { showProjectPicker(); });
     ipcRenderer.on("menu:openFinder", () => { showFinder(""); });
@@ -1676,79 +2749,112 @@ el.wordGoal?.addEventListener("input", () => {
     });
   }
 
-  // Preload ALL remote data (projects + chapters + notes + refs) for current user
+  // DB sync function - downloads latest data from DB to project directory
+  async function syncFromDB() {
+    try {
+      // First check if sync is enabled
+      const syncEnabled = await ipcRenderer.invoke('sync:isEnabled')
+        .catch(() => false);
+      
+      if (!syncEnabled) {
+        dbg("DB sync skipped - sync is disabled");
+        return false;
+      }
+
+      const auth = await ipcRenderer.invoke("auth:get");
+      if (!auth?.ok || !auth.user) {
+        dbg("DB sync skipped - no user logged in");
+        return false;
+      }
+      
+      dbg("Starting DB sync...");
+      const syncResult = await ipcRenderer.invoke("db:syncFromDB");
+      if (!syncResult?.ok) {
+        throw new Error(syncResult?.error || "Unknown error during sync");
+      }
+
+      // After sync, refresh the project picker if it exists
+      if (picker) {
+        await refreshProjectList();
+        dbg("Refreshed project list after sync");
+      }
+
+      // If we have a current project loaded, reload it to get latest changes
+      if (state.currentProjectDir && state.workspacePath) {
+        try {
+          await appLoadFromDisk();
+          dbg("Reloaded current project after sync");
+        } catch (loadErr) {
+          dbg(`Warning: Could not reload current project: ${loadErr.message}`);
+        }
+      }
+
+      dbg(`DB sync successful - synced ${syncResult.projectCount} projects`);
+      return true;
+    } catch (err) {
+      dbg(`DB sync error: ${err?.message || err}`);
+      throw err; // Re-throw to handle in calling code
+    }
+  }
+  
+  // Legacy function kept for compatibility
   async function loadRemoteSnapshotIntoState() {
-    dbg("remote: preloading snapshot…");
-    const out = {
-      projects: [],
-      chaptersByProject: {},
-      notesByProject: {},
-      refsByProject: {}
-    };
-
-    // 1) Projects for current user
-    const p = await ipcRenderer.invoke("projects:listRemote").catch(err => ({ ok:false, error:String(err) }));
-    if (!p?.ok) {
-      dbg(`remote: listRemote failed: ${p?.error || "unknown"}`);
-      state.remote = out; // keep shape
-      return;
-    }
-    out.projects = p.items || [];
-
-    // 2) Children per project
-    for (const proj of out.projects) {
-      const [ch, no, rf] = await Promise.all([
-        ipcRenderer.invoke("chapters:listByProject", { projectIdOrCode: proj.id }).catch(e => ({ ok:false, items:[], error:String(e) })),
-        ipcRenderer.invoke("notes:listByProject",    { projectIdOrCode: proj.id }).catch(e => ({ ok:false, items:[], error:String(e) })),
-        ipcRenderer.invoke("refs:listByProject",     { projectIdOrCode: proj.id }).catch(e => ({ ok:false, items:[], error:String(e) }))
-      ]);
-
-      out.chaptersByProject[proj.id] = ch?.items || [];
-      out.notesByProject[proj.id]    = no?.items || [];
-      out.refsByProject[proj.id]     = rf?.items || [];
-    }
-
-    state.remote = out;
-    dbg(`remote: loaded ${out.projects.length} projects`);
+    dbg("remote: loadRemoteSnapshotIntoState redirected to syncFromDB");
+    await syncFromDB();
   }
 
 
   // ───────────────── Init ─────────────────
-  (async function init() {
-    if (el.empty) { el.empty.classList.add("hidden"); el.empty.style.display = "none"; }
-
-    // APPLY VISUALS ON LAUNCH (before any project load)
-    ensureAppBg();
-    applyThemeAndBackground();
-
-    if (!ipcRenderer) {
-      dbg("No ipcRenderer; cannot manage projects. Proceeding without project picker.");
-      return;
-    }
-
-    // DB connectivity smoke test (renderer → main IPC → DB)
+  document.addEventListener("DOMContentLoaded", async () => {
     try {
-      const ping = await ipcRenderer.invoke("db:ping");
-      dbg(`db:ping -> ${JSON.stringify(ping)}`);
-    } catch (err) {
-      dbg(`db:ping error: ${err?.message || err}`);
-    }
+      if (el.empty) { el.empty.classList.add("hidden"); el.empty.style.display = "none"; }
 
-    // ── NEW: auth state on boot ──
-    try {
-      const a = await ipcRenderer.invoke("auth:get");
-      if (a?.ok && a.user) {
-        dbg(`auth:get -> logged in as ${a.user.email || a.user.id}`);
-        // If a login screen exists, hide it defensively
-        const loginA = document.getElementById("login-screen");
-        const loginB = document.querySelector('[data-view="login"]');
-        if (loginA) loginA.style.display = "none";
-        if (loginB) loginB.style.display = "none";
-      } else {
-        dbg("auth:get -> no user; login screen should be visible.");
+      // APPLY VISUALS ON LAUNCH (before any project load)
+      ensureAppBg();
+      applyThemeAndBackground();
+
+      if (!ipcRenderer) {
+        throw new Error("No ipcRenderer; cannot manage projects");
       }
+
+      // Check if user is already logged in
+      const auth = await ipcRenderer.invoke("auth:get");
+      if (!auth?.ok || !auth.user) {
+        dbg("No auth user; showing login modal");
+        hideProjectPicker();
+        ensureLoginModal();
+        showLoginModal();
+        return;
+      }
+
+      // User is logged in - initialize app state
+      state.authUser = auth.user;
+      dbg(`Initializing for logged in user: ${auth.user.email}`);
+
+      // Hide any login UI that might exist
+      const loginA = document.getElementById("login-screen"); 
+      const loginB = document.querySelector('[data-view="login"]');
+      if (loginA) loginA.style.display = "none";
+      if (loginB) loginB.style.display = "none";
+
+      // Load preferences
+      await loadUIPrefs();
+
+      // Initialize project picker without syncing
+      const picker = ensureProjectPicker();
+      if (picker) {
+        showProjectPicker();
+        dbg("Showed project picker for logged in user");
+      } else {
+        throw new Error("Failed to initialize project picker");
+      }
+
     } catch (err) {
-      dbg(`auth:get error: ${err?.message || err}`);
+      dbg(`Initialization error: ${err?.message || err}`);
+      // On error, show login modal as fallback
+      hideProjectPicker();
+      ensureLoginModal();
+      showLoginModal();
     }
 
      // ───────────── Auth check / Login prompt ─────────────
@@ -1769,18 +2875,10 @@ el.wordGoal?.addEventListener("input", () => {
       return;                        // Stop init on error as well
     }
 
-    // Load & apply UI prefs from DB (if present)
+    // Load & apply UI prefs
     await loadUIPrefs();
-
-    // Pull a read-only chapter snapshot from the user's remote projects
-    try {
-      await loadRemoteSnapshotIntoState();
-      dbg("boot: remote snapshot loaded");
-    } catch (e) {
-      dbg(`remote preload error: ${e?.message || e}`);
-    }
-
-    // Always surface the picker at boot when user is signed-in
+    
+    // Show project picker by default when signed in, without syncing
     ensureProjectPicker();
     showProjectPicker();
 
@@ -1830,6 +2928,6 @@ if (!state.currentProjectDir || !state.workspacePath) {
 
     startFailsafeTimer();
     dbg(`Workspace ready: ${SAVE_FILE}`);
-  })();
+  });
 
 })();

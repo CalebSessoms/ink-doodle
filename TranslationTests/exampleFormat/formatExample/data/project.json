@@ -1,0 +1,70 @@
+{
+  "project": {
+    "title": "formatExample",
+    "name": "formatExample",
+    "saved_at": "2025-10-30T00:08:30.412Z",
+    "updated_at": "2025-10-30T00:08:30.412Z"
+  },
+  "entries": [
+    {
+      "id": "chapter-1761782855255-1u1pt97x",
+      "type": "chapter",
+      "title": "Chapter 1",
+      "updated_at": "2025-10-30T00:08:21.996Z",
+      "created_at": "2025-10-30T00:07:35.255Z",
+      "order_index": 0,
+      "body": "basic body",
+      "tags": [
+        "exampleTag"
+      ],
+      "status": "Draft",
+      "synopsis": "basic synopsis",
+      "word_goal": 50
+    },
+    {
+      "id": "note-1761782856128-fz9shphg",
+      "type": "note",
+      "title": "Note 1",
+      "updated_at": "2025-10-30T00:07:58.467Z",
+      "created_at": "2025-10-30T00:07:36.128Z",
+      "order_index": 0,
+      "body": "basic body",
+      "tags": [
+        "exampleTag"
+      ],
+      "category": "Misc",
+      "pinned": true
+    },
+    {
+      "id": "reference-1761782856868-vjc9uac9",
+      "type": "reference",
+      "title": "Reference 1",
+      "updated_at": "2025-10-30T00:08:30.412Z",
+      "created_at": "2025-10-30T00:07:36.868Z",
+      "order_index": 0,
+      "body": "basic body",
+      "tags": [
+        "exampleTag"
+      ],
+      "reference_type": "Glossary",
+      "summary": "basic summary",
+      "source_link": ""
+    }
+  ],
+  "ui": {
+    "activeTab": "references",
+    "selectedId": "reference-1761782856868-vjc9uac9",
+    "counters": {
+      "chapter": 1,
+      "note": 1,
+      "reference": 1
+    },
+    "mode": "theme",
+    "theme": "slate",
+    "bg": "aurora",
+    "bgOpacity": 0.2,
+    "bgBlur": 2,
+    "editorDim": true
+  },
+  "version": 1
+}

@@ -7,6 +7,7 @@
   --accent: #2563eb;
   --accentH: #1d4ed8;
   --danger: #dc2626;
+  --success: #16a34a;
 
   /* NEW */
   --bg-soft: #fafafa;
@@ -460,7 +461,64 @@ body.theme-slate .body {
   padding: 0 8px;
 }
 
+/* Sync progress UI */
+.sync-progress {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  font-size: 13px;
+  color: var(--muted);
+  border-radius: 6px;
+  background: var(--bg-soft);
+  height: 32px;
+  margin-right: 8px;
+  transition: opacity 0.2s ease;
+}
 
+.sync-progress.active {
+  display: flex;
+}
+
+.sync-progress .phase {
+  font-weight: 500;
+}
+
+.sync-progress .progress-bar {
+  width: 100px;
+  height: 4px;
+  background: var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.sync-progress .progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+
+.sync-progress.error {
+  color: var(--danger);
+}
+
+.sync-progress.complete {
+  color: var(--success);
+}
+
+.sync-progress .spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
 
 .bottom-bar .left-stats {
   display: flex;

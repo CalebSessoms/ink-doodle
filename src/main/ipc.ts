@@ -1,10 +1,13 @@
 // ink-doodle/src/main/ipc.ts
 
 // Use CommonJS so Node can load this via ts-node/register
-const { ipcMain } = require('electron');
-const { pingDB, pool } = require('./db');
-const fs   = require('fs');
-const path = require('path');
+const { ipcMain, app } = require('electron');
+import { appendDebugLog, getGlobalLogPath } from './log';
+import { pingDB, pool, downloadProjects, uploadProject } from './db';
+require('./db.sync.ipc.ts'); // Register DB sync handlers
+import type { Project, ProjectChanges } from './db.types';
+import * as fs from 'fs';
+import * as path from 'path';
 
 ipcMain.handle('db:ping', async () => {
   try {
@@ -16,106 +19,9 @@ ipcMain.handle('db:ping', async () => {
   }
 });
 
-// ---------- DB helpers (resolve id or code) ----------
-async function resolveProjectId(idOrCode) {
-  // Accept numeric id or public code (e.g., PRJ-0001-000123)
-  const q = `
-    SELECT id
-      FROM projects
-     WHERE code = $1
-        OR (CASE WHEN $1 ~ '^[0-9]+$' THEN CAST($1 AS INT) ELSE NULL END) = id
-     LIMIT 1;
-  `;
-  const res = await pool.query(q, [String(idOrCode)]);
-  return res.rows?.[0]?.id ?? null;
-}
+// DB helpers will be reimplemented with new sync approach
 
-// NEW: helper → current logged-in creator id (from prefs.auth_user)
-async function getCurrentCreatorId() {
-  const r = await pool.query(
-    `SELECT value AS user FROM prefs WHERE key = 'auth_user' LIMIT 1;`
-  );
-  return r.rows?.[0]?.user?.id ?? null;
-}
-
-// ---------- READ-ONLY IPC: projects:list ----------
-ipcMain.handle('projects:list', async () => {
-  try {
-    const q = `
-      SELECT id, code, title, creator_id, created_at, updated_at
-        FROM projects
-       ORDER BY id;
-    `;
-    const { rows } = await pool.query(q);
-    return { ok: true, items: rows };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: msg, items: [] };
-  }
-});
-
-// ---------- READ-ONLY IPC: chapters:listByProject ----------
-ipcMain.handle('chapters:listByProject', async (_evt, { projectIdOrCode }) => {
-  try {
-    const pid = await resolveProjectId(projectIdOrCode);
-    if (!pid) return { ok: true, items: [] };
-
-    const q = `
-      SELECT id, code, project_id, creator_id, number, title, status, summary,
-             tags, created_at, updated_at
-        FROM chapters
-       WHERE project_id = $1
-       ORDER BY number NULLS LAST, id;
-    `;
-    const { rows } = await pool.query(q, [pid]);
-    return { ok: true, items: rows };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: msg, items: [] };
-  }
-});
-
-// ---------- READ-ONLY IPC: notes:listByProject ----------
-ipcMain.handle('notes:listByProject', async (_evt, payload) => {
-  try {
-    const pid = await resolveProjectId(payload?.projectIdOrCode);
-    if (!pid) return { ok: true, items: [] };
-
-    const q = `
-      SELECT id, code, project_id, creator_id, number, title, content,
-             tags, category, pinned, created_at, updated_at
-        FROM notes
-       WHERE project_id = $1
-       ORDER BY number NULLS LAST, id;
-    `;
-    const { rows } = await pool.query(q, [pid]);
-    return { ok: true, items: rows };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: msg, items: [] };
-  }
-});
-
-// ---------- READ-ONLY IPC: refs:listByProject ----------
-ipcMain.handle('refs:listByProject', async (_evt, payload) => {
-  try {
-    const pid = await resolveProjectId(payload?.projectIdOrCode);
-    if (!pid) return { ok: true, items: [] };
-
-    const q = `
-      SELECT id, code, project_id, creator_id, number, title, tags, type,
-             summary, link, content, created_at, updated_at
-        FROM refs
-       WHERE project_id = $1
-       ORDER BY number NULLS LAST, id;
-    `;
-    const { rows } = await pool.query(q, [pid]);
-    return { ok: true, items: rows };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: msg, items: [] };
-  }
-});
+// Project listing/loading handlers will be reimplemented with new DB sync approach
 
 // NEW: prefs:getWorkspacePath (reads prefs table; returns "" if unset)
 ipcMain.handle('prefs:getWorkspacePath', async () => {
@@ -194,7 +100,7 @@ ipcMain.handle('prefs:set', async (_evt, { key, value }) => {
   }
 });
 
-// Auth:get → returns current logged-in user from prefs.auth_user or null
+// Get current logged in user
 ipcMain.handle('auth:get', async () => {
   try {
     const r = await pool.query(
@@ -208,26 +114,147 @@ ipcMain.handle('auth:get', async () => {
   }
 });
 
-// Logout: clear auth_user, optionally push/save and clear local workspace
-ipcMain.handle('auth:logout', async (_evt, payload?: { workspacePath?: string; projectIdOrCode?: string | number }) => {
+// Logout: Upload active project to DB and clear local data
+ipcMain.handle('auth:logout', async (_evt, payload?: { projectPath?: string; workspaceExists?: boolean }) => {
+  appendDebugLog('auth:logout — Starting logout process');
   try {
-    const workspacePath = payload?.workspacePath;
-    const projectIdOrCode = payload?.projectIdOrCode;
-
-    // 1) Persist local → DB if both hints provided
-    if (workspacePath && projectIdOrCode) {
-      await pushWorkspaceToDb(workspacePath, projectIdOrCode);
+    const projectPath = payload?.projectPath;
+    const workspaceExists = payload?.workspaceExists ?? false;
+    
+    appendDebugLog(`auth:logout — Workspace path: ${projectPath || '(none)'}`);
+    appendDebugLog(`auth:logout — Workspace exists: ${workspaceExists}`);
+    
+    // 1) First, get the current user's ID for project creation
+    const authQuery = await pool.query(
+      `SELECT value->>'id' AS creator_id FROM prefs WHERE key = 'auth_user' LIMIT 1;`
+    );
+    const creatorId = Number(authQuery.rows?.[0]?.creator_id);
+    if (!creatorId) {
+      throw new Error('Could not determine current user ID');
     }
 
-    // 2) Clear auth_user in prefs
-    await pool.query(`DELETE FROM prefs WHERE key = 'auth_user';`);
+    // 2) Process all projects in InkDoodleProjects directory
+    const projectsRoot = path.join(require('electron').app.getPath('documents'), 'InkDoodleProjects');
+    
+    if (!global.DB_SYNC_ENABLED) {
+      appendDebugLog('auth:logout — Project upload disabled via DB_SYNC_ENABLED flag');
+    } else if (fs.existsSync(projectsRoot)) {
+      // First sync any deletions for existing projects
+      const { syncDeletions } = require('./db.sync');
+      await syncDeletions(creatorId, { ignoreMissing: false });
+      appendDebugLog('auth:logout — Completed initial deletion sync');
 
-    // 3) Optionally clear local workspace folder
-    if (workspacePath) await clearWorkspaceDir(workspacePath);
+      // Then process remaining projects
+      const projectDirs = fs.readdirSync(projectsRoot).filter(d => 
+        fs.statSync(path.join(projectsRoot, d)).isDirectory()
+      );
+      
+      appendDebugLog(`auth:logout — Found ${projectDirs.length} projects to process`);
+      
+      for (const projectDir of projectDirs) {
+        const fullPath = path.join(projectsRoot, projectDir);
+        try {
+          appendDebugLog(`auth:logout — Processing project at: ${fullPath}`);
+        
+          // Load the project and its items
+          const projectFile = path.join(fullPath, 'data', 'project.json');
+          if (fs.existsSync(projectFile)) {
+            const raw = fs.readFileSync(projectFile, 'utf8');
+            const data = JSON.parse(raw);
+            // Extract project info from data
+            const project: Project = {
+              id: 0, // Will be assigned by DB
+              code: data.project.code || '',
+              title: data.project.name || data.project.title || 'Untitled Project',
+              creator_id: creatorId,
+              created_at: data.project.created_at || new Date().toISOString(),
+              updated_at: data.project.saved_at || data.project.updated_at || new Date().toISOString(),
+              chapters: [], // These arrays will be populated by the changes system
+              notes: [],
+              refs: []
+            };
+            appendDebugLog(`auth:logout — Loaded project: "${project.title}"`);
+          
+            // Load all items from their respective directories 
+            const chaptersDir = path.join(fullPath, 'chapters');
+            const notesDir = path.join(fullPath, 'notes'); 
+            const refsDir = path.join(fullPath, 'refs');
+          
+            // Call syncToDB with project directory
+            appendDebugLog(`auth:logout — Starting sync of project directory: ${fullPath}`);
+            try {
+              const { syncToDB } = require('./db.sync');
+              const result = await syncToDB(creatorId, fullPath);
+              if (!result.ok) {
+                throw new Error(result.error);
+              }
+              appendDebugLog(`auth:logout — Successfully synced project "${project.title}" to DB`);
+            } catch (syncError) {
+              appendDebugLog(`auth:logout — Failed to sync project: ${syncError?.message || syncError}`);
+              throw syncError;
+            }
+          } else {
+            appendDebugLog(`auth:logout — No project.json found in ${fullPath}, skipping`);
+          }
+        } catch (e) {
+          const errMsg = `Failed to save project to DB: ${e?.message || e}`;
+          appendDebugLog(`auth:logout — ${errMsg}`);
+          throw new Error(errMsg); // Rethrow to prevent logout if save fails
+        }
+      }
+    } else {
+      appendDebugLog('auth:logout — No projects directory found');
+    }
 
+    // Always clean up local files on logout, regardless of sync state
+    try {
+      if (fs.existsSync(projectsRoot)) {
+        const projCount = fs.readdirSync(projectsRoot).length;
+        appendDebugLog(`auth:logout — Clearing ${projCount} projects from ${projectsRoot}`);
+        fs.rmSync(projectsRoot, { recursive: true, force: true });
+        fs.mkdirSync(projectsRoot, { recursive: true });
+        appendDebugLog('auth:logout — Successfully cleared and reinitialized projects directory');
+      } else {
+        appendDebugLog('auth:logout — Projects directory did not exist, creating fresh');
+        fs.mkdirSync(projectsRoot, { recursive: true });
+      }
+    } catch (e) {
+      appendDebugLog(`auth:logout — Failed to clear projects directory: ${e?.message || e}`);
+    }
+
+    // 3) Clear workspace if provided
+    if (projectPath) {
+      try {
+        if (fs.existsSync(projectPath)) {
+          appendDebugLog(`auth:logout — Clearing workspace at: ${projectPath}`);
+          fs.rmSync(projectPath, { recursive: true, force: true });
+          fs.mkdirSync(projectPath, { recursive: true });
+          appendDebugLog('auth:logout — Successfully cleared and reinitialized workspace');
+        } else {
+          appendDebugLog('auth:logout — Workspace directory did not exist, skipping cleanup');
+        }
+      } catch (e) {
+        appendDebugLog(`auth:logout — Failed to clear workspace: ${e?.message || e}`);
+      }
+    }
+
+    // No final sync needed - the local projects were already synced and saved
+    appendDebugLog('auth:logout — Skipping final deletion sync since all projects were already processed');
+
+    // 5) Clear auth_user in prefs
+    try {
+      await pool.query(`DELETE FROM prefs WHERE key = 'auth_user';`);
+      appendDebugLog('auth:logout — Successfully cleared auth_user from prefs');
+    } catch (e) {
+      appendDebugLog(`auth:logout — Failed to clear auth_user from prefs: ${e?.message || e}`);
+      throw e; // Auth clear failure should abort logout
+    }
+
+    appendDebugLog('auth:logout — Logout process completed successfully');
     return { ok: true };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    appendDebugLog(`auth:logout — Process failed with error: ${msg}`);
     return { ok: false, error: msg };
   }
 });
@@ -279,6 +306,110 @@ ipcMain.handle('auth:login', async (_evt, { email }) => {
       })]
     );
 
+    try { appendDebugLog(`auth:login — User logged in: ${creator.email} (${creator.id})`); } catch (e) {}
+
+    // 4) Download all user's projects to local files
+    // Ensure projects directory exists even when not syncing
+    const projectsRoot = path.join(require('electron').app.getPath('documents'), 'InkDoodleProjects');
+    if (!fs.existsSync(projectsRoot)) {
+      fs.mkdirSync(projectsRoot, { recursive: true });
+    }
+
+    if (!global.DB_SYNC_ENABLED) {
+      appendDebugLog('auth:login — Project download disabled via DB_SYNC_ENABLED flag');
+    } else {
+      try {
+        const projects = await downloadProjects(creator.id);
+        
+        // Ensure fresh projects directory
+        if (fs.existsSync(projectsRoot)) {
+          fs.rmSync(projectsRoot, { recursive: true, force: true });
+        }
+        fs.mkdirSync(projectsRoot, { recursive: true });
+
+        // Save each project - ALWAYS use code as directory name for consistency
+      for (const project of projects) {
+        // Always use code as the directory name to ensure consistency
+        const projectDir = path.join(projectsRoot, project.code);
+        
+        fs.mkdirSync(path.join(projectDir, 'data'), { recursive: true });
+        fs.mkdirSync(path.join(projectDir, 'chapters'), { recursive: true });
+        fs.mkdirSync(path.join(projectDir, 'notes'), { recursive: true });
+        fs.mkdirSync(path.join(projectDir, 'refs'), { recursive: true });
+
+        // Write project.json with proper nesting structure and normalized title
+        fs.writeFileSync(
+          path.join(projectDir, 'data', 'project.json'),
+          JSON.stringify({
+            project: {
+              ...project,
+              displayTitle: project.title, // Preserve the display title
+              name: project.title // For backwards compatibility
+            },
+            // Current state of entries
+            entries: [
+              ...project.chapters.map(ch => ({
+                id: ch.code,
+                type: 'chapter',
+                title: ch.title,
+                order_index: ch.number || 0,
+                updated_at: ch.updated_at
+              })),
+              ...project.notes.map(n => ({
+                id: n.code,
+                type: 'note', 
+                title: n.title,
+                order_index: n.number || 0,
+                updated_at: n.updated_at
+              })),
+              ...project.refs.map(r => ({
+                id: r.code,
+                type: 'reference',
+                title: r.title,
+                order_index: r.number || 0,
+                updated_at: r.updated_at
+              }))
+            ],
+            // Change tracking
+            chapters: { added: [], updated: [], deleted: [] },
+            notes: { added: [], updated: [], deleted: [] },
+            refs: { added: [], updated: [], deleted: [] }
+          }, null, 2),
+          'utf8'
+        );
+
+        // Write chapters, notes, refs to their own files
+        for (const ch of project.chapters) {
+          fs.writeFileSync(
+            path.join(projectDir, 'chapters', `${ch.code}.json`),
+            JSON.stringify(ch, null, 2),
+            'utf8'
+          );
+        }
+
+        for (const note of project.notes) {
+          fs.writeFileSync(
+            path.join(projectDir, 'notes', `${note.code}.json`),
+            JSON.stringify(note, null, 2),
+            'utf8'
+          );
+        }
+
+        for (const ref of project.refs) {
+          fs.writeFileSync(
+            path.join(projectDir, 'refs', `${ref.code}.json`),
+            JSON.stringify(ref, null, 2),
+            'utf8'
+          );
+        }
+      }
+
+        appendDebugLog(`auth:login — Downloaded ${projects.length} projects to local files`);
+      } catch (e) {
+        appendDebugLog(`auth:login — Warning: Failed to download projects: ${e?.message || e}`);
+      }
+    }
+
     return { ok: true, user: { ...creator } };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -287,6 +418,9 @@ ipcMain.handle('auth:login', async (_evt, { email }) => {
 });
 
 // List remote projects for the current or provided creator
+
+// Local project handlers are provided by the main entry (`index.js`) to avoid duplicate ipcMain registrations.
+
 ipcMain.handle('projects:listRemote', async (_evt, payload) => {
   const creatorId = payload?.creatorId ?? null; // pass numeric id explicitly when provided
   try {
@@ -319,335 +453,209 @@ ipcMain.handle('projects:listRemote', async (_evt, payload) => {
   }
 });
 
-// ---------- READ-ONLY IPC: projects:bundle (project + children) ----------
+// Download project bundle from DB and save to local files
 ipcMain.handle('projects:bundle', async (_evt, payload) => {
   try {
-    const pid = await resolveProjectId(payload?.projectIdOrCode);
-    if (!pid) return { ok: false, error: 'Unknown project.' };
+    const projectId = Number(payload?.projectIdOrCode);
+    if (!projectId || isNaN(projectId)) {
+      return { ok: false, error: 'Invalid project ID' };
+    }
 
-    const qProject = pool.query(
-      `SELECT id, code, title, creator_id, created_at, updated_at
-         FROM projects
-        WHERE id = $1
-        LIMIT 1;`,
-      [pid]
+    // Get creator ID from auth user
+    const auth = await pool.query(
+      `SELECT value->>'id' AS creator_id 
+       FROM prefs 
+       WHERE key = 'auth_user' 
+       LIMIT 1;`
+    );
+    const creatorId = Number(auth.rows?.[0]?.creator_id);
+    if (!creatorId) {
+      return { ok: false, error: 'No logged in user' };
+    }
+
+    // Check sync status before downloading
+    if (!global.DB_SYNC_ENABLED) {
+      appendDebugLog('projects:bundle — Project download disabled via DB_SYNC_ENABLED flag');
+      return { ok: false, error: 'Project sync is currently disabled' };
+    }
+
+    // Download all projects (we'll filter to the one we want)
+    const projects = await downloadProjects(creatorId);
+    const project = projects.find(p => p.id === projectId);
+    
+    if (!project) {
+      return { ok: false, error: 'Project not found' };
+    }
+
+    // Save to local files
+    const projectsRoot = path.join(require('electron').app.getPath('documents'), 'InkDoodleProjects');
+    // Always use code as directory name for consistency
+    const projectDir = path.join(projectsRoot, project.code);
+    
+    fs.mkdirSync(path.join(projectDir, 'data'), { recursive: true });
+    fs.mkdirSync(path.join(projectDir, 'chapters'), { recursive: true });
+    fs.mkdirSync(path.join(projectDir, 'notes'), { recursive: true });
+    fs.mkdirSync(path.join(projectDir, 'refs'), { recursive: true });
+
+    // Write project.json with proper nesting structure and normalized title
+    fs.writeFileSync(
+      path.join(projectDir, 'data', 'project.json'),
+      JSON.stringify({
+        project: {
+          ...project,
+          displayTitle: project.title, // Preserve the display title 
+          name: project.title // For backwards compatibility
+        },
+        // Current state of entries
+        entries: [
+          ...project.chapters.map(ch => ({
+            id: ch.code,
+            type: 'chapter',
+            title: ch.title,
+            order_index: ch.number || 0,
+            updated_at: ch.updated_at
+          })),
+          ...project.notes.map(n => ({
+            id: n.code,
+            type: 'note',
+            title: n.title,
+            order_index: n.number || 0,
+            updated_at: n.updated_at
+          })),
+          ...project.refs.map(r => ({
+            id: r.code,
+            type: 'reference',
+            title: r.title,
+            order_index: r.number || 0,
+            updated_at: r.updated_at
+          }))
+        ],
+        // Change tracking
+        chapters: { added: [], updated: [], deleted: [] },
+        notes: { added: [], updated: [], deleted: [] },
+        refs: { added: [], updated: [], deleted: [] }
+      }, null, 2),
+      'utf8'
     );
 
-    const qChapters = pool.query(
-      `SELECT id, code, project_id, creator_id, number, title, status, summary,
-              tags, content, created_at, updated_at
-         FROM chapters
-        WHERE project_id = $1
-        ORDER BY number NULLS LAST, id;`,
-      [pid]
-    );
+    // Write chapters, notes, refs to their own files
+    for (const ch of project.chapters) {
+      fs.writeFileSync(
+        path.join(projectDir, 'chapters', `${ch.code}.json`),
+        JSON.stringify(ch, null, 2),
+        'utf8'
+      );
+    }
 
-    const qNotes = pool.query(
-      `SELECT id, code, project_id, creator_id, number, title, content,
-              tags, category, pinned, created_at, updated_at
-         FROM notes
-        WHERE project_id = $1
-        ORDER BY number NULLS LAST, id;`,
-      [pid]
-    );
+    for (const note of project.notes) {
+      fs.writeFileSync(
+        path.join(projectDir, 'notes', `${note.code}.json`),
+        JSON.stringify(note, null, 2),
+        'utf8'
+      );
+    }
 
-    const qRefs = pool.query(
-      `SELECT id, code, project_id, creator_id, number, title, tags, type,
-              summary, link, content, created_at, updated_at
-         FROM refs
-        WHERE project_id = $1
-        ORDER BY number NULLS LAST, id;`,
-      [pid]
-    );
+    for (const ref of project.refs) {
+      fs.writeFileSync(
+        path.join(projectDir, 'refs', `${ref.code}.json`),
+        JSON.stringify(ref, null, 2),
+        'utf8'
+      );
+    }
 
-    const [proj, ch, no, re] = await Promise.all([qProject, qChapters, qNotes, qRefs]);
-
-    return {
-      ok: true,
-      project: proj.rows?.[0] || null,
-      chapters: ch.rows || [],
-      notes: no.rows || [],
-      refs: re.rows || [],
-    };
+    return { ok: true, project };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { ok: false, error: msg };
   }
 });
 
-// App is quitting: optionally persist & clear local
-ipcMain.handle('app:willQuit', async (_evt, payload?: { workspacePath?: string; projectIdOrCode?: string | number }) => {
+// Debug logging helpers
+ipcMain.handle('debug:getGlobalLogPath', () => {
   try {
-    const workspacePath = payload?.workspacePath;
-    const projectIdOrCode = payload?.projectIdOrCode;
+    const logPath = getGlobalLogPath();
+    return { ok: true, path: logPath };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: msg };
+  }
+});
 
-    if (workspacePath && projectIdOrCode) {
-      await pushWorkspaceToDb(workspacePath, projectIdOrCode);
+// App path helper 
+ipcMain.handle('app:getPath', (_evt, { name }) => {
+  try {
+    const p = app.getPath(name);
+    return { ok: true, path: p };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: msg };
+  }
+});
+
+// Save project to DB before app quits
+ipcMain.handle('app:willQuit', async (_evt, payload?: { projectPath?: string }) => {
+  appendDebugLog('app:willQuit — Starting quit save process');
+  try {
+    const projectPath = payload?.projectPath;
+    if (!projectPath) {
+      appendDebugLog('app:willQuit — No project path provided, skipping save');
+      return { ok: true };
     }
-    // NOTE: we do NOT clear auth on quit; only on explicit logout
+
+    appendDebugLog(`app:willQuit — Processing project at: ${projectPath}`);
+
+    // Load project from files and save to DB if sync is enabled
+    if (!global.DB_SYNC_ENABLED) {
+      appendDebugLog('app:willQuit — Project sync disabled - skipping DB save');
+      return { ok: true };
+    }
+
+    const projectFile = path.join(projectPath, 'data', 'project.json');
+    if (fs.existsSync(projectFile)) {
+      try {
+        // Load project info
+        const raw = fs.readFileSync(projectFile, 'utf8');
+        const project = JSON.parse(raw);
+        appendDebugLog(`app:willQuit — Loaded project from ${projectFile}`);
+
+        // Get creator ID for sync
+        const authQuery = await pool.query(
+          `SELECT value->>'id' AS creator_id FROM prefs WHERE key = 'auth_user' LIMIT 1;`
+        );
+        const creatorId = Number(authQuery.rows?.[0]?.creator_id);
+        if (!creatorId) {
+          throw new Error('No logged in user found');
+        }
+
+        // Sync project directory to DB
+        try {
+          const { syncToDB, syncDeletions } = require('./db.sync');
+          await syncToDB(creatorId, projectPath);
+          appendDebugLog(`app:willQuit — Successfully synced project to DB`);
+
+          // After syncing changes, handle deletions
+          await syncDeletions(creatorId);
+          appendDebugLog(`app:willQuit — Successfully synced deletions`);
+        } catch (uploadError) {
+          const errMsg = `DB upload failed: ${uploadError?.message || uploadError}`;
+          appendDebugLog(`app:willQuit — ${errMsg}`);
+          throw new Error(errMsg);
+        }
+
+      } catch (parseError) {
+        const errMsg = `Failed to process project data: ${parseError?.message || parseError}`;
+        appendDebugLog(`app:willQuit — ${errMsg}`);
+        throw new Error(errMsg);
+      }
+    } else {
+      appendDebugLog('app:willQuit — No project.json found, skipping DB save');
+    }
+
+    appendDebugLog('app:willQuit — Quit save process completed successfully');
     return { ok: true };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: msg };
-  }
-});
-
-// ──────────────────────────────────────────────────────────────
-// Helpers: write local workspace → DB (replace children), and clear workspace dir
-async function syncFromWorkspaceToDB({ workspacePath, projectIdOrCode }) {
-  // 1) read project.json
-  const dataPath = path.join(workspacePath, 'data', 'project.json');
-  const raw = fs.readFileSync(dataPath, 'utf8');
-  const payload = JSON.parse(raw);
-
-  const title = (payload?.project?.name || 'Untitled Project').trim();
-
-  // 2) find current user (creator)
-  const cr = await pool.query(`SELECT value AS user FROM prefs WHERE key = 'auth_user' LIMIT 1;`);
-  const creatorId = cr.rows?.[0]?.user?.id ?? null;
-  if (!creatorId) throw new Error('No logged-in user');
-
-  // 3) resolve or create project (prefer explicit id/code if provided)
-  let projectId = null;
-  if (projectIdOrCode != null) {
-    projectId = await resolveProjectId(projectIdOrCode);
-  }
-  if (!projectId) {
-    // try to find by (creator_id, title)
-    const f = await pool.query(
-      `SELECT id FROM projects WHERE creator_id = $1 AND title = $2 LIMIT 1;`,
-      [creatorId, title]
-    );
-    projectId = f.rows?.[0]?.id ?? null;
-  }
-  if (!projectId) {
-    const ins = await pool.query(
-      `INSERT INTO projects (creator_id, title) VALUES ($1, $2) RETURNING id;`,
-      [creatorId, title]
-    );
-    projectId = ins.rows[0].id;
-  }
-
-  // 4) split entries
-  const entries = Array.isArray(payload?.entries) ? payload.entries : [];
-  const chapters = entries.filter(e => e.type === 'chapter');
-  const notes    = entries.filter(e => e.type === 'note');
-  const refs     = entries.filter(e => e.type === 'reference');
-
-  // 5) replace children in a transaction (simple, consistent with MVP)
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-
-    await client.query(`DELETE FROM chapters WHERE project_id = $1;`, [projectId]);
-    await client.query(`DELETE FROM notes    WHERE project_id = $1;`, [projectId]);
-    await client.query(`DELETE FROM refs     WHERE project_id = $1;`, [projectId]);
-
-    // chapters
-    for (const ch of chapters) {
-      await client.query(
-        `INSERT INTO chapters (project_id, creator_id, number, title, status, summary, tags, content)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8);`,
-        [
-          projectId,
-          creatorId,
-          Number.isFinite(ch.order_index) ? ch.order_index : null,
-          ch.title || 'Untitled Chapter',
-          (ch.status || 'draft'),
-          ch.synopsis || '',
-          Array.isArray(ch.tags) ? ch.tags : [],
-          ch.body || ''
-        ]
-      );
-    }
-
-    // notes
-    for (const n of notes) {
-      await client.query(
-        `INSERT INTO notes (project_id, creator_id, number, title, content, tags, category, pinned)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8);`,
-        [
-          projectId,
-          creatorId,
-          Number.isFinite(n.order_index) ? n.order_index : null,
-          n.title || 'Untitled Note',
-          n.body || '',
-          Array.isArray(n.tags) ? n.tags : [],
-          n.category || null,
-          !!n.pinned
-        ]
-      );
-    }
-
-    // refs
-    for (const r of refs) {
-      await client.query(
-        `INSERT INTO refs (project_id, creator_id, number, title, tags, type, summary, link, content)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9);`,
-        [
-          projectId,
-          creatorId,
-          Number.isFinite(r.order_index) ? r.order_index : null,
-          r.title || 'Untitled Reference',
-          Array.isArray(r.tags) ? r.tags : [],
-          r.reference_type || null,
-          r.summary || '',
-          r.source_link || '',
-          r.body || ''
-        ]
-      );
-    }
-
-    await client.query('COMMIT');
-    return { ok: true, projectId, counts: { chapters: chapters.length, notes: notes.length, refs: refs.length } };
-  } catch (e) {
-    await client.query('ROLLBACK');
-    throw e;
-  } finally {
-    client.release();
-  }
-}
-
-function clearWorkspaceDir(workspacePath) {
-  try {
-    if (workspacePath && fs.existsSync(workspacePath)) {
-      fs.rmSync(workspacePath, { recursive: true, force: true });
-    }
-  } catch (e) {
-    // bubble up so callers can decide whether to ignore
-    throw e;
-  }
-}
-
-// ──────────────────────────────────────────────────────────────
-// projects:syncToWorkspace → pull bundle from DB and write workspace/data/project.json
-ipcMain.handle('projects:syncToWorkspace', async (_evt, { projectIdOrCode, workspacePath }) => {
-
-  try {
-    if (!workspacePath || typeof workspacePath !== 'string') {
-      return { ok: false, error: 'workspacePath is required' };
-    }
-
-    // 1) Resolve project id and fetch bundle (reuse SQL similar to projects:bundle)
-    const pid = await resolveProjectId(projectIdOrCode);
-    if (!pid) return { ok: false, error: 'Unknown project.' };
-
-    const qProject = pool.query(
-      `SELECT id, code, title, creator_id, created_at, updated_at
-         FROM projects
-        WHERE id = $1
-        LIMIT 1;`,
-      [pid]
-    );
-
-    const qChapters = pool.query(
-      `SELECT id, code, project_id, creator_id, number, title, status, summary,
-              tags, content, created_at, updated_at
-         FROM chapters
-        WHERE project_id = $1
-        ORDER BY number NULLS LAST, id;`,
-      [pid]
-    );
-
-    const qNotes = pool.query(
-      `SELECT id, code, project_id, creator_id, number, title, content,
-              tags, category, pinned, created_at, updated_at
-         FROM notes
-        WHERE project_id = $1
-        ORDER BY number NULLS LAST, id;`,
-      [pid]
-    );
-
-    const qRefs = pool.query(
-      `SELECT id, code, project_id, creator_id, number, title, tags, type,
-              summary, link, content, created_at, updated_at
-         FROM refs
-        WHERE project_id = $1
-        ORDER BY number NULLS LAST, id;`,
-      [pid]
-    );
-
-    const [proj, ch, no, re] = await Promise.all([qProject, qChapters, qNotes, qRefs]);
-    const project = proj.rows?.[0];
-    if (!project) return { ok: false, error: 'Project not found.' };
-
-    // 2) Map DB rows → renderer entries (aligns with your local app model)
-    const nowISO = () => new Date().toISOString();
-    const entries = [];
-
-    // chapters → type: "chapter"
-    for (const r of (ch.rows || [])) {
-      entries.push({
-        id: r.code || `db-ch-${r.id}`,
-        type: 'chapter',
-        title: r.title || 'Untitled Chapter',
-        status: (r.status || 'draft').toLowerCase(),
-        tags: Array.isArray(r.tags) ? r.tags : [],
-        synopsis: r.summary || '',
-        body: r.content || '',
-        order_index: Number.isFinite(r.number) ? r.number : entries.filter(e => e.type === 'chapter').length,
-        updated_at: r.updated_at || nowISO(),
-        // word_goal is optional; if you added it in DB it will exist as r.word_goal
-        word_goal: r.word_goal ?? 0
-      });
-    }
-
-    // notes → type: "note"
-    for (const r of (no.rows || [])) {
-      entries.push({
-        id: r.code || `db-no-${r.id}`,
-        type: 'note',
-        title: r.title || 'Untitled Note',
-        tags: Array.isArray(r.tags) ? r.tags : [],
-        category: r.category || 'Misc',
-        pinned: !!r.pinned,
-        body: r.content || '',
-        order_index: Number.isFinite(r.number) ? r.number : entries.filter(e => e.type === 'note').length,
-        updated_at: r.updated_at || nowISO(),
-      });
-    }
-
-    // refs → type: "reference"
-    for (const r of (re.rows || [])) {
-      entries.push({
-        id: r.code || `db-re-${r.id}`,
-        type: 'reference',
-        title: r.title || 'Untitled Reference',
-        tags: Array.isArray(r.tags) ? r.tags : [],
-        reference_type: r.type || 'Glossary',
-        summary: r.summary || '',
-        source_link: r.link || '',
-        body: r.content || '',
-        order_index: Number.isFinite(r.number) ? r.number : entries.filter(e => e.type === 'reference').length,
-        updated_at: r.updated_at || nowISO(),
-      });
-    }
-
-    // 3) Compose local project.json payload
-    const data = {
-      project: { name: project.title || 'Untitled Project', saved_at: nowISO() },
-      entries,
-      ui: {
-        // keep defaults; renderer will set these on first write
-        activeTab: 'chapters',
-        selectedId: entries.find(e => e.type === 'chapter')?.id || entries[0]?.id || null,
-        counters: { chapter: 1, note: 1, reference: 1 },
-      },
-      version: 1,
-    };
-
-    // 4) Write to <workspace>/data/project.json
-    const saveFile = path.join(workspacePath, 'data', 'project.json');
-    fs.mkdirSync(path.dirname(saveFile), { recursive: true });
-    fs.writeFileSync(saveFile, JSON.stringify(data, null, 2), 'utf8');
-
-    return { ok: true, saveFile, counts: {
-      chapters: (ch.rows || []).length,
-      notes: (no.rows || []).length,
-      refs: (re.rows || []).length,
-    }};
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    appendDebugLog(`app:willQuit — Process failed with error: ${msg}`);
     return { ok: false, error: msg };
   }
 });

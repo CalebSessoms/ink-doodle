@@ -1,0 +1,15 @@
+{
+  "id": "chapter-1761782855255-1u1pt97x",
+  "type": "chapter",
+  "title": "Chapter 1",
+  "updated_at": "2025-10-30T00:08:21.996Z",
+  "created_at": "2025-10-30T00:07:35.255Z",
+  "order_index": 0,
+  "body": "basic body",
+  "tags": [
+    "exampleTag"
+  ],
+  "status": "Draft",
+  "synopsis": "basic synopsis",
+  "word_goal": 50
+}
