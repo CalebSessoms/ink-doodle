@@ -34,12 +34,12 @@ trg_creators_updated_at BEFORE UPDATE ON creators FOR EACH ROW EXECUTE FUNCTION 
 
 Table "public.projects"
 Column	Type	Collation	Nullable	Default
-id	integer		not null	nextval('projects_id_seq'::regclass)
+id	text		not null	nextval('projects_id_seq'::regclass)
 title	text		not null	
 creator_id	integer		not null	
 created_at	timestamp without time zone			now()
 updated_at	timestamp without time zone			now()
-code	text			
+code	integer			
 Indexes:
 "projects_pkey" PRIMARY KEY, btree (id)
 "idx_projects_created_at" btree (created_at)
@@ -52,13 +52,12 @@ TABLE "chapters" CONSTRAINT "chapters_project_id_fkey" FOREIGN KEY (project_id) 
 TABLE "notes" CONSTRAINT "notes_project_id_fkey" FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 TABLE "refs" CONSTRAINT "refs_project_id_fkey" FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 Triggers:
-trg_projects_assign_code BEFORE INSERT ON projects FOR EACH ROW EXECUTE FUNCTION projects_assign_code()
 trg_projects_updated_at BEFORE UPDATE ON projects FOR EACH ROW EXECUTE FUNCTION set_updated_at()
 
 Table "public.chapters"
 Column	Type	Collation	Nullable	Default
-id	integer		not null	nextval('chapters_id_seq'::regclass)
-project_id	integer		not null	
+id	text		not null	nextval('chapters_id_seq'::regclass)
+project_id	text		not null	
 creator_id	integer		not null	
 number	integer			
 title	text		not null	
@@ -68,7 +67,7 @@ summary	text
 tags	text[]			
 created_at	timestamp without time zone			now()
 updated_at	timestamp without time zone			now()
-code	text			
+code	integer			
 word_goal	integer			0
 Indexes:
 "chapters_pkey" PRIMARY KEY, btree (id)
@@ -81,13 +80,12 @@ Foreign-key constraints:
 "chapters_creator_id_fkey" FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE
 "chapters_project_id_fkey" FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 Triggers:
-trg_chapters_assign_code BEFORE INSERT ON chapters FOR EACH ROW EXECUTE FUNCTION chapters_assign_code()
 trg_chapters_updated_at BEFORE UPDATE ON chapters FOR EACH ROW EXECUTE FUNCTION set_updated_at()
 
 Table "public.notes"
 Column	Type	Collation	Nullable	Default
-id	integer		not null	nextval('notes_id_seq'::regclass)
-project_id	integer		not null	
+id	text		not null	nextval('notes_id_seq'::regclass)
+project_id	text		not null	
 creator_id	integer		not null	
 number	integer			
 title	text		not null	
@@ -97,7 +95,7 @@ category	text
 pinned	boolean			false
 created_at	timestamp without time zone			now()
 updated_at	timestamp without time zone			now()
-code	text			
+code	integer			
 Indexes:
 "notes_pkey" PRIMARY KEY, btree (id)
 "idx_notes_creator_id" btree (creator_id)
@@ -109,13 +107,12 @@ Foreign-key constraints:
 "notes_creator_id_fkey" FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE
 "notes_project_id_fkey" FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 Triggers:
-trg_notes_assign_code BEFORE INSERT ON notes FOR EACH ROW EXECUTE FUNCTION notes_assign_code()
 trg_notes_updated_at BEFORE UPDATE ON notes FOR EACH ROW EXECUTE FUNCTION set_updated_at()
 
 Table "public.refs"
 Column	Type	Collation	Nullable	Default
-id	integer		not null	nextval('refs_id_seq'::regclass)
-project_id	integer		not null	
+id	text		not null	nextval('refs_id_seq'::regclass)
+project_id	text		not null	
 creator_id	integer		not null	
 number	integer			
 title	text		not null	
@@ -126,7 +123,7 @@ source_link	text
 content	text			
 created_at	timestamp without time zone			now()
 updated_at	timestamp without time zone			now()
-code	text			
+code	integer			
 Indexes:
 "refs_pkey" PRIMARY KEY, btree (id)
 "idx_refs_creator_id" btree (creator_id)
@@ -138,7 +135,6 @@ Foreign-key constraints:
 "refs_creator_id_fkey" FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE
 "refs_project_id_fkey" FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 Triggers:
-trg_refs_assign_code BEFORE INSERT ON refs FOR EACH ROW EXECUTE FUNCTION refs_assign_code()
 trg_refs_updated_at BEFORE UPDATE ON refs FOR EACH ROW EXECUTE FUNCTION set_updated_at()
 
 Table "public.prefs"

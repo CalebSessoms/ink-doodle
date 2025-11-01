@@ -3,11 +3,12 @@
 // Use CommonJS so Node can load this via ts-node/register
 const { ipcMain, app } = require('electron');
 import { appendDebugLog, getGlobalLogPath } from './log';
-import { pingDB, pool, downloadProjects, uploadProject } from './db';
+import { pingDB, pool, downloadProjects } from './db';
 require('./db.sync.ipc.ts'); // Register DB sync handlers
-import type { Project, ProjectChanges } from './db.types';
+import type { Project } from './db.types';
 import * as fs from 'fs';
 import * as path from 'path';
+import { uploadLocalProjects } from './db.upload';
 
 ipcMain.handle('db:ping', async () => {
   try {
@@ -117,6 +118,8 @@ ipcMain.handle('auth:get', async () => {
 // Logout: Upload active project to DB and clear local data
 ipcMain.handle('auth:logout', async (_evt, payload?: { projectPath?: string; workspaceExists?: boolean }) => {
   appendDebugLog('auth:logout — Starting logout process');
+  // Ensure DB sync is enabled when logout begins so the upload/cleanup paths run
+  try { global.DB_SYNC_ENABLED = true; appendDebugLog('auth:logout — DB_SYNC_ENABLED set true'); } catch (e) { /* best-effort */ }
   try {
     const projectPath = payload?.projectPath;
     const workspaceExists = payload?.workspaceExists ?? false;
@@ -134,76 +137,23 @@ ipcMain.handle('auth:logout', async (_evt, payload?: { projectPath?: string; wor
     }
 
     // 2) Process all projects in InkDoodleProjects directory
+    // NOTE: Upload-on-logout was removed per user request. We will NOT attempt
+    // to sync or upload local projects to the DB during logout. This keeps
+    // local JSON files authoritative and avoids unintended DB writes.
     const projectsRoot = path.join(require('electron').app.getPath('documents'), 'InkDoodleProjects');
-    
-    if (!global.DB_SYNC_ENABLED) {
-      appendDebugLog('auth:logout — Project upload disabled via DB_SYNC_ENABLED flag');
-    } else if (fs.existsSync(projectsRoot)) {
-      // First sync any deletions for existing projects
-      const { syncDeletions } = require('./db.sync');
-      await syncDeletions(creatorId, { ignoreMissing: false });
-      appendDebugLog('auth:logout — Completed initial deletion sync');
 
-      // Then process remaining projects
-      const projectDirs = fs.readdirSync(projectsRoot).filter(d => 
-        fs.statSync(path.join(projectsRoot, d)).isDirectory()
-      );
-      
-      appendDebugLog(`auth:logout — Found ${projectDirs.length} projects to process`);
-      
-      for (const projectDir of projectDirs) {
-        const fullPath = path.join(projectsRoot, projectDir);
-        try {
-          appendDebugLog(`auth:logout — Processing project at: ${fullPath}`);
-        
-          // Load the project and its items
-          const projectFile = path.join(fullPath, 'data', 'project.json');
-          if (fs.existsSync(projectFile)) {
-            const raw = fs.readFileSync(projectFile, 'utf8');
-            const data = JSON.parse(raw);
-            // Extract project info from data
-            const project: Project = {
-              id: 0, // Will be assigned by DB
-              code: data.project.code || '',
-              title: data.project.name || data.project.title || 'Untitled Project',
-              creator_id: creatorId,
-              created_at: data.project.created_at || new Date().toISOString(),
-              updated_at: data.project.saved_at || data.project.updated_at || new Date().toISOString(),
-              chapters: [], // These arrays will be populated by the changes system
-              notes: [],
-              refs: []
-            };
-            appendDebugLog(`auth:logout — Loaded project: "${project.title}"`);
-          
-            // Load all items from their respective directories 
-            const chaptersDir = path.join(fullPath, 'chapters');
-            const notesDir = path.join(fullPath, 'notes'); 
-            const refsDir = path.join(fullPath, 'refs');
-          
-            // Call syncToDB with project directory
-            appendDebugLog(`auth:logout — Starting sync of project directory: ${fullPath}`);
-            try {
-              const { syncToDB } = require('./db.sync');
-              const result = await syncToDB(creatorId, fullPath);
-              if (!result.ok) {
-                throw new Error(result.error);
-              }
-              appendDebugLog(`auth:logout — Successfully synced project "${project.title}" to DB`);
-            } catch (syncError) {
-              appendDebugLog(`auth:logout — Failed to sync project: ${syncError?.message || syncError}`);
-              throw syncError;
-            }
-          } else {
-            appendDebugLog(`auth:logout — No project.json found in ${fullPath}, skipping`);
-          }
-        } catch (e) {
-          const errMsg = `Failed to save project to DB: ${e?.message || e}`;
-          appendDebugLog(`auth:logout — ${errMsg}`);
-          throw new Error(errMsg); // Rethrow to prevent logout if save fails
-        }
+    // Upload local projects to DB using the new uploader
+    try {
+      if (fs.existsSync(projectsRoot)) {
+        appendDebugLog('auth:logout — Starting project upload on logout');
+        const res = await uploadLocalProjects(projectsRoot, { performUpload: true });
+        appendDebugLog(`auth:logout — uploadLocalProjects result: ${JSON.stringify(res)}`);
+      } else {
+        appendDebugLog('auth:logout — No projects directory found (nothing to upload)');
       }
-    } else {
-      appendDebugLog('auth:logout — No projects directory found');
+    } catch (e) {
+      appendDebugLog(`auth:logout — Project upload failed: ${e?.message || e}`);
+      // proceed with cleanup regardless of upload failure
     }
 
     // Always clean up local files on logout, regardless of sync state
@@ -238,8 +188,6 @@ ipcMain.handle('auth:logout', async (_evt, payload?: { projectPath?: string; wor
       }
     }
 
-    // No final sync needed - the local projects were already synced and saved
-    appendDebugLog('auth:logout — Skipping final deletion sync since all projects were already processed');
 
     // 5) Clear auth_user in prefs
     try {
@@ -256,6 +204,9 @@ ipcMain.handle('auth:logout', async (_evt, payload?: { projectPath?: string; wor
     const msg = err instanceof Error ? err.message : String(err);
     appendDebugLog(`auth:logout — Process failed with error: ${msg}`);
     return { ok: false, error: msg };
+  } finally {
+    // Disable DB sync after logout flow completes
+    try { global.DB_SYNC_ENABLED = false; appendDebugLog('auth:logout — DB_SYNC_ENABLED set false'); } catch (e) { /* best-effort */ }
   }
 });
 
@@ -266,6 +217,8 @@ ipcMain.handle('auth:logout', async (_evt, payload?: { projectPath?: string; wor
 // Login (MVP): email lookup-or-create, then persist to prefs.auth_user
 ipcMain.handle('auth:login', async (_evt, { email }) => {
   try {
+  // Ensure DB sync is enabled when login begins so project download paths run
+  try { global.DB_SYNC_ENABLED = true; appendDebugLog('auth:login — DB_SYNC_ENABLED set true'); } catch (e) { /* best-effort */ }
     const em = String(email || '').trim().toLowerCase();
     if (!em || !em.includes('@')) {
       return { ok: false, error: 'Please provide a valid email.' };
@@ -414,6 +367,9 @@ ipcMain.handle('auth:login', async (_evt, { email }) => {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { ok: false, error: msg };
+  } finally {
+    // Disable DB sync after login flow completes
+    try { global.DB_SYNC_ENABLED = false; appendDebugLog('auth:login — DB_SYNC_ENABLED set false'); } catch (e) { /* best-effort */ }
   }
 });
 
@@ -581,6 +537,20 @@ ipcMain.handle('debug:getGlobalLogPath', () => {
   }
 });
 
+// Allow renderer to append a debug line to the global/per-project logs.
+ipcMain.handle('debug:append', (_evt, payload) => {
+  try {
+    const line = payload && typeof payload === 'object' ? payload.line : undefined;
+    const projectDir = payload && typeof payload === 'object' ? payload.projectDir : undefined;
+    if (typeof line !== 'string') throw new Error('Invalid debug line');
+    appendDebugLog(line, projectDir || null);
+    return { ok: true };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: msg };
+  }
+});
+
 // App path helper 
 ipcMain.handle('app:getPath', (_evt, { name }) => {
   try {
@@ -612,41 +582,11 @@ ipcMain.handle('app:willQuit', async (_evt, payload?: { projectPath?: string }) 
 
     const projectFile = path.join(projectPath, 'data', 'project.json');
     if (fs.existsSync(projectFile)) {
-      try {
-        // Load project info
-        const raw = fs.readFileSync(projectFile, 'utf8');
-        const project = JSON.parse(raw);
-        appendDebugLog(`app:willQuit — Loaded project from ${projectFile}`);
-
-        // Get creator ID for sync
-        const authQuery = await pool.query(
-          `SELECT value->>'id' AS creator_id FROM prefs WHERE key = 'auth_user' LIMIT 1;`
-        );
-        const creatorId = Number(authQuery.rows?.[0]?.creator_id);
-        if (!creatorId) {
-          throw new Error('No logged in user found');
-        }
-
-        // Sync project directory to DB
-        try {
-          const { syncToDB, syncDeletions } = require('./db.sync');
-          await syncToDB(creatorId, projectPath);
-          appendDebugLog(`app:willQuit — Successfully synced project to DB`);
-
-          // After syncing changes, handle deletions
-          await syncDeletions(creatorId);
-          appendDebugLog(`app:willQuit — Successfully synced deletions`);
-        } catch (uploadError) {
-          const errMsg = `DB upload failed: ${uploadError?.message || uploadError}`;
-          appendDebugLog(`app:willQuit — ${errMsg}`);
-          throw new Error(errMsg);
-        }
-
-      } catch (parseError) {
-        const errMsg = `Failed to process project data: ${parseError?.message || parseError}`;
-        appendDebugLog(`app:willQuit — ${errMsg}`);
-        throw new Error(errMsg);
-      }
+      // NOTE: Upload-on-quit has been disabled per request. We intentionally
+      // do NOT call syncToDB or syncDeletions here to avoid automatic writes
+      // to the remote database during app shutdown. Keep logging so the
+      // behavior is visible and reversible.
+      appendDebugLog(`app:willQuit — Found project at ${projectFile} but skipping DB upload on quit (upload logic removed)`);
     } else {
       appendDebugLog('app:willQuit — No project.json found, skipping DB save');
     }

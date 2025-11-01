@@ -49,24 +49,16 @@ export interface Reference {
   number: number | null;
   title: string;
   tags: string[];
-  reference_type: string | null;
+  type: string | null;
   summary: string | null;
-  source_link: string | null;
+  link: string | null;
   content: string | null;
   created_at: string;
   updated_at: string;
 }
 
 // Interface for tracking changes
-export interface EntityChanges<T> {
-  added: T[];
-  updated: T[];
-  deleted: string[]; // Array of codes to delete
-}
-
-export interface ProjectChanges {
-  project: Project;
-  chapters: EntityChanges<Chapter>;
-  notes: EntityChanges<Note>;
-  refs: EntityChanges<Reference>;
-}
+// Upload-related change-tracking types were removed because local->DB
+// uploads have been intentionally removed from the application. If you
+// later reintroduce upload flows, re-add appropriate change-tracking
+// interfaces here.

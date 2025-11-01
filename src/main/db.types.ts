@@ -1,16 +1,7 @@
-// Interface for tracking changes
-export interface EntityChanges<T> {
-    added: T[];
-    updated: T[];
-    deleted: string[]; // Array of codes to delete
-}
-
-export interface ProjectChanges {
-    project: Project;
-    chapters: EntityChanges<Chapter>;
-    notes: EntityChanges<Note>;
-    refs: EntityChanges<Reference>;
-}
+// Upload/change-tracking interfaces removed
+// Note: EntityChanges and ProjectChanges were removed because local->DB
+// upload flows were intentionally deleted. Reintroduce these only if you
+// re-enable upload/change-tracking behavior.
 
 // Base interface for all entities with codes
 export interface CodedEntity {

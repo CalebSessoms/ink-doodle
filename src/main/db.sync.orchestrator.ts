@@ -1,10 +1,8 @@
 // db.sync.orchestrator.ts - Coordinates sync operations
 import { ipcMain, app } from 'electron';
-import { syncFromDB, syncDeletions, syncToDB } from './db.sync';
+import { syncFromDB } from './db.sync';
 import { pool } from './db';
 import { appendDebugLog } from './log';
-import * as path from 'path';
-import * as fs from 'fs';
 
 interface SyncResult {
   ok: boolean;
@@ -89,31 +87,18 @@ class SyncOrchestrator {
         return { ok: false, error: 'No user logged in' };
       }
 
-      // Get current project directory
-      const projectsRoot = path.join(app.getPath("documents"), "InkDoodleProjects");
-      const dirs = fs.readdirSync(projectsRoot).filter(dir => 
-        fs.statSync(path.join(projectsRoot, dir)).isDirectory()
-      );
-
-      // For each project directory
-      for (const dir of dirs) {
-        const projectDir = path.join(projectsRoot, dir);
-        
-        // Push local state to DB
-        appendDebugLog(`sync:perform — Syncing project directory: ${dir}`);
-        const pushResult = await syncToDB(creatorId, projectDir);
-        
-        if (!pushResult.ok) {
-          appendDebugLog(`sync:perform — Failed to sync project ${dir}`);
-          continue;
-        }
+      // Previously this orchestrator scanned local project directories and
+      // pushed local changes to the DB. Uploads have been intentionally
+      // removed across the app. We do not perform any local->DB scanning
+      // or upload/deletion behavior here — only downloads/pulls from DB.
+      try {
+        const res = await syncFromDB(creatorId);
+        this.lastSyncTime = Date.now();
+        return { ok: !!res.ok, reloadNeeded: res.reloadNeeded || false };
+      } catch (e) {
+        appendDebugLog(`sync:perform — download-only sync failed: ${e?.message || e}`);
+        return { ok: false, error: String(e) };
       }
-
-      // Clean up deleted projects
-      await syncDeletions(creatorId, { ignoreMissing: true });
-
-      this.lastSyncTime = Date.now();
-      return { ok: true, reloadNeeded: false };
 
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -125,32 +110,23 @@ class SyncOrchestrator {
   }
 
   private async pushChanges(creatorId: number, changes: any[]): Promise<SyncResult> {
-    try {
-      for (const change of changes) {
-        if (change.deleted) {
-          await this.handleDeletion(creatorId, change);
-        } else {
-          await this.handleUpdate(creatorId, change);
-        }
-      }
-      return { ok: true };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      appendDebugLog(`sync:pushChanges — Failed: ${msg}`);
-      return { ok: false, error: msg };
-    }
+    // Uploads are disabled. This method is retained as a safe no-op so
+    // other modules that may call it won't trigger writes. It returns
+    // a failure result to indicate the push was not performed.
+    appendDebugLog('sync:pushChanges — Attempted push ignored: uploads are disabled');
+    return { ok: false, error: 'Uploads are disabled' };
   }
 
   private async handleDeletion(creatorId: number, change: any): Promise<void> {
-    // Implement deletion logic
-    appendDebugLog(`sync:handleDeletion — Deleting ${change.type} ${change.id}`);
-    // ... deletion implementation ...
+    // Deletions are disabled. Log and return.
+    appendDebugLog(`sync:handleDeletion — Ignored deletion ${change.type} ${change.id} (uploads disabled)`);
+    return;
   }
 
   private async handleUpdate(creatorId: number, change: any): Promise<void> {
-    // Implement update logic
-    appendDebugLog(`sync:handleUpdate — Updating ${change.type} ${change.id}`);
-    // ... update implementation ...
+    // Updates are disabled. Log and return.
+    appendDebugLog(`sync:handleUpdate — Ignored update ${change.type} ${change.id} (uploads disabled)`);
+    return;
   }
 }
 

@@ -11,7 +11,7 @@ require("ts-node/register");
 require("./src/main/ipc.ts");
 
 // Temporary flag to disable DB sync while keeping auth
-global.DB_SYNC_ENABLED = true;
+global.DB_SYNC_ENABLED = false;
 
 // Add handler to check sync enabled state
 ipcMain.handle('sync:isEnabled', () => {
@@ -34,6 +34,28 @@ function emptyDirSync(dir) {
 function copyDirSync(src, dest) {
   ensureDir(dest);
   fs.cpSync(src, dest, { recursive: true, force: true });
+}
+// Utility: list files under a directory (relative paths). Limits to max entries.
+function listFilesRecursive(root, maxEntries = 500) {
+  const out = [];
+  try {
+    function walk(dir) {
+      const items = fs.readdirSync(dir, { withFileTypes: true });
+      for (const it of items) {
+        if (out.length >= maxEntries) return;
+        const full = path.join(dir, it.name);
+        const rel = path.relative(root, full).replace(/\\/g, '/');
+        if (it.isDirectory()) {
+          walk(full);
+        } else {
+          out.push(rel);
+        }
+        if (out.length >= maxEntries) return;
+      }
+    }
+    if (fs.existsSync(root)) walk(root);
+  } catch (e) { /* best-effort */ }
+  return out;
 }
 // Use shared logger so IPC code can also write to the same logs
 const { appendDebugLog, getGlobalLogPath } = require('./src/main/log');
@@ -244,6 +266,12 @@ ipcMain.handle("project:new", async (_evt, { name }) => {
       throw new Error('Must be logged in to create a project');
     }
 
+    // Determine a numeric project id by counting existing projects (do this before creating the dir)
+    const existingDirs = fs.readdirSync(root, { withFileTypes: true }).filter(d => d.isDirectory()).length;
+    const nextId = existingDirs + 1;
+    const now = new Date().toISOString();
+    const pad = (n) => String(n).padStart(6, '0');
+
     // Create all required directories
     ensureDir(dir);
     const dataDir = path.join(dir, "data"); ensureDir(dataDir);
@@ -251,29 +279,124 @@ ipcMain.handle("project:new", async (_evt, { name }) => {
     const notesDir = path.join(dir, "notes"); ensureDir(notesDir);
     const refsDir = path.join(dir, "refs"); ensureDir(refsDir);
 
-    // Create base project structure with all required fields
+    // Create base project structure (new format)
+    // For codes we use the pattern: <TYPE>-<parentId(4)>-<id(6)>
+    // For projects: parentId = creatorId; for entries: parentId = projectId
+    const projectCode = `PRJ-${String(creatorId).padStart(4,'0')}-${pad(nextId)}`;
+
+    // Determine per-entry sequence ids by counting existing files in each folder
+    const existingCh = fs.existsSync(chaptersDir) ? fs.readdirSync(chaptersDir).filter(f => f.endsWith('.json')).length : 0;
+    const existingNt = fs.existsSync(notesDir) ? fs.readdirSync(notesDir).filter(f => f.endsWith('.json')).length : 0;
+    const existingRf = fs.existsSync(refsDir) ? fs.readdirSync(refsDir).filter(f => f.endsWith('.json')).length : 0;
+    const chSeq = existingCh + 1;
+    const ntSeq = existingNt + 1;
+    const rfSeq = existingRf + 1;
+
+    // Per-entry codes follow the original pattern: TYPE-<projectId padded4>-<id padded6>
+    const chCode = `CHP-${String(nextId).padStart(4,'0')}-${pad(chSeq)}`;
+    const ntCode = `NT-${String(nextId).padStart(4,'0')}-${pad(ntSeq)}`;
+    const rfCode = `RF-${String(nextId).padStart(4,'0')}-${pad(rfSeq)}`;
+
     const pj = {
-      // Project data
       project: {
+        id: nextId,
+        code: projectCode,
         title: name,
-        name: name,
         creator_id: creatorId,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        saved_at: new Date().toISOString()
+        created_at: now,
+        updated_at: now
       },
-      // Entries array for all content
-      entries: [],
-      // UI state and metadata
-      ui: { 
-        activeTab: "chapters", 
-        selectedId: null, 
-        counters: { chapter: 0, note: 0, reference: 0 } 
-      },
-      saved_at: new Date().toISOString(),
-      version: 1
+      entries: [
+        {
+          id: chSeq,
+          code: chCode,
+          type: 'chapter',
+          title: 'Chapter 1',
+          order_index: 0,
+          updated_at: now
+        },
+        {
+            id: ntSeq,
+            code: ntCode,
+          type: 'note',
+          title: 'Note 1',
+          order_index: 0,
+          updated_at: now
+        },
+        {
+            id: rfSeq,
+            code: rfCode,
+          type: 'reference',
+          title: 'Reference 1',
+          order_index: 0,
+          updated_at: now
+        }
+      ]
     };
+
+    // Write project.json
     fs.writeFileSync(path.join(dataDir, "project.json"), JSON.stringify(pj, null, 2), "utf8");
+
+    // Also create per-item files for chapters, notes, and refs (match example structure)
+    try {
+  const chCode = pj.entries[0].code;
+  const ntCode = pj.entries[1].code;
+  const rfCode = pj.entries[2].code;
+
+      const chapterObj = {
+        id: chSeq,
+        code: chCode,
+        project_id: nextId,
+        creator_id: creatorId,
+        title: pj.entries[0].title,
+        content: "",
+        status: "Draft",
+        summary: "",
+        tags: [],
+        created_at: now,
+        updated_at: now,
+        word_goal: 0
+      };
+  // Write per-item files using concise filenames (e.g. CH1.json, NT1.json, RF1.json)
+  const chFilename = `CH${chSeq}.json`;
+  fs.writeFileSync(path.join(chaptersDir, chFilename), JSON.stringify(chapterObj, null, 2), 'utf8');
+
+      const noteObj = {
+        id: ntSeq,
+        code: ntCode,
+        project_id: nextId,
+        creator_id: creatorId,
+        title: pj.entries[1].title,
+        content: "",
+        tags: [],
+        category: "Misc",
+        pinned: false,
+        created_at: now,
+        updated_at: now
+      };
+  const ntFilename = `NT${ntSeq}.json`;
+  fs.writeFileSync(path.join(notesDir, ntFilename), JSON.stringify(noteObj, null, 2), 'utf8');
+
+      const refObj = {
+        id: rfSeq,
+        code: rfCode,
+        project_id: nextId,
+        creator_id: creatorId,
+        title: pj.entries[2].title,
+        tags: [],
+        reference_type: "Glossary",
+        summary: "",
+        source_link: "",
+        content: "",
+        created_at: now,
+        updated_at: now
+      };
+  const rfFilename = `RF${rfSeq}.json`;
+  fs.writeFileSync(path.join(refsDir, rfFilename), JSON.stringify(refObj, null, 2), 'utf8');
+    } catch (e) {
+      // Non-fatal: log and continue
+      try { appendDebugLog(`project:new — Warning: failed to write per-item files: ${e?.message || e}`); } catch (ex) {}
+    }
     appendDebugLog(`project:new — Created new project "${name}" at ${dir}`);
     return { ok: true, dir };
   } catch (e) {
@@ -340,16 +463,24 @@ ipcMain.handle("project:load", async (_evt, { dir }) => {
         } catch (e) {}
         appendDebugLog(`project:saveBack — Auto-saving current workspace ${ws} back to project "${curName}" at ${currentProjectDir}`);
         copyDirSync(ws, currentProjectDir);
-        appendDebugLog(`project:saveBack — Completed auto-save-back of project "${curName}" → ${currentProjectDir}`);
+        // Provide a file-level summary of what was saved back
+        try {
+          const files = listFilesRecursive(ws, 500);
+          appendDebugLog(`project:saveBack — Completed auto-save-back of project "${curName}" → ${currentProjectDir} (files saved: ${files.length})`, currentProjectDir);
+          if (files.length) appendDebugLog(`project:saveBack — Sample files: ${files.slice(0,50).join(', ')}`, currentProjectDir);
+        } catch (e) {
+          appendDebugLog(`project:saveBack — Completed auto-save-back of project "${curName}" → ${currentProjectDir}`);
+        }
       } catch (e) {
         appendDebugLog(`project:saveBack — Auto-save-back failed for ${currentProjectDir}: ${e?.message || e}`);
       }
     }
-
+    appendDebugLog(`project:load — Clearing workspace directory: ${ws}`);
     emptyDirSync(ws);
+    appendDebugLog(`project:load — Copying project files from ${dir} → ${ws}`);
     copyDirSync(dir, ws);
     currentProjectDir = dir;
-  appendDebugLog(`project:load — Completed load of project "${incomingName}" → workspace ${ws}`, dir);
+    appendDebugLog(`project:load — Completed load of project "${incomingName}" → workspace ${ws}`, dir);
 
     return { ok: true, activePath: ws, currentProjectDir };
   } catch (e) {
@@ -380,7 +511,13 @@ ipcMain.handle("project:saveBack", async () => {
     appendDebugLog(`project:saveBack — Manual save-back starting for project "${curName}" at ${currentProjectDir}`);
     ensureDir(currentProjectDir);
     copyDirSync(ws, currentProjectDir);
-    appendDebugLog(`project:saveBack — Manual save-back completed for project "${curName}" → ${currentProjectDir}`);
+    try {
+      const files = listFilesRecursive(ws, 500);
+      appendDebugLog(`project:saveBack — Manual save-back completed for project "${curName}" → ${currentProjectDir} (files saved: ${files.length})`, currentProjectDir);
+      if (files.length) appendDebugLog(`project:saveBack — Sample files: ${files.slice(0,50).join(', ')}`, currentProjectDir);
+    } catch (e) {
+      appendDebugLog(`project:saveBack — Manual save-back completed for project "${curName}" → ${currentProjectDir}`);
+    }
     return { ok: true, target: currentProjectDir };
   } catch (e) {
     appendDebugLog(`project:saveBack — Failed save-back to ${currentProjectDir}: ${e && e.message ? e.message : e}`);

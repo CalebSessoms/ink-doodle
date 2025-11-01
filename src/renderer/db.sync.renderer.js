@@ -140,35 +140,17 @@ async function syncWithDB() {
       return { ok: false, error: 'Not logged in' };
     }
     
-    // 2. Get list of local changes
+    // NOTE: Uploads have been removed from the automatic sync flow.
+    // Previously we checked for local changes and called into the main
+    // process to push them (db:pushDirectory). That path has been removed
+    // to keep local files authoritative and avoid unintended DB writes.
+    // We still perform a download/pull from the DB below.
     updateProgress({
       phase: 'check',
       current: 1,
       total: 5,
-      detail: 'Checking local changes...'
+      detail: 'Skipping upload step (uploads disabled)'
     });
-
-    const changes = await ipcRenderer.invoke('db:checkSync', {
-      projectDir: auth.workspaceDir
-    });
-
-    // 3. If we have local changes, push them first
-    if (changes?.ok && changes.needsSync) {
-      updateProgress({
-        phase: 'upload',
-        current: 2,
-        total: 5,
-        detail: 'Uploading local changes...'
-      });
-
-      const pushResult = await ipcRenderer.invoke('db:pushDirectory', {
-        projectDir: auth.workspaceDir
-      });
-
-      if (!pushResult?.ok) {
-        return { ok: false, error: pushResult?.error || 'Failed to push changes' };
-      }
-    }
     
     // 4. Pull latest from DB
     updateProgress({

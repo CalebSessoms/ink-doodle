@@ -29,6 +29,8 @@ function dbg(msg) {
   const line  = `[${stamp}] ${String(msg)}`;
   console.log("[debug]", msg);
   _dbgAppendToFile(line);
+  // Also forward every renderer debug line to the main process so it appears in the global log
+  try { if (ipcRenderer && ipcRenderer.invoke) ipcRenderer.invoke('debug:append', { line }).catch(() => {}); } catch (_) { /* best-effort */ }
   const b = document.getElementById("debug-banner");
   if (b) b.textContent = `[debug] ${msg}`;
 }
@@ -672,9 +674,9 @@ async function _wireDebugLogPathEarly() {
     state.entries = chapters.concat(others);
 
     const vis = visibleEntries();
-    if (!state.selectedId && vis.length) state.selectedId = vis[0].id;
-    if (state.selectedId && !state.entries.find(e => e.id === state.selectedId) && vis.length) {
-      state.selectedId = vis[0].id;
+      if (!state.selectedId && vis.length) state.selectedId = entryKey(vis[0]);
+    if (state.selectedId && !findEntryByKey(state.selectedId) && vis.length) {
+      state.selectedId = entryKey(vis[0]);
     }
 
     renderList();
@@ -1204,7 +1206,22 @@ function saveUIPrefsDebounced() {
     picker.style.pointerEvents = "auto";
     picker.style.display = "flex";
     
-    // Just refresh the project list immediately
+    // Only sync if enabled
+    const syncEnabled = await ipcRenderer.invoke('sync:isEnabled')
+      .catch(() => false);
+
+    if (syncEnabled) {
+      dbg("Syncing with DB before showing project picker...");
+      const syncResult = await ipcRenderer.invoke("db:syncFromDB");
+      if (!syncResult.ok) {
+        dbg(`Warning: DB sync failed: ${syncResult.error}`);
+      } else {
+        dbg(`DB sync completed: ${syncResult.projectCount} projects synced`);
+      }
+    } else {
+      dbg("DB sync disabled - skipping sync before showing picker");
+    }
+    
     refreshProjectList();
 
     // Reset and focus the new-project input
@@ -1337,58 +1354,16 @@ function saveUIPrefsDebounced() {
             }
 
             try {
-              const projectData = JSON.parse(fs.readFileSync(projectFile, 'utf8'));
-              
-              // If in legacy format, convert it
-              if (!projectData.entries && (projectData.chapters || projectData.notes || projectData.refs)) {
-                const migrated = {
-                  project: {
-                    name: projectData.project?.title || item.name,
-                    title: projectData.project?.title || item.name,
-                    code: projectData.project?.code || `PRJ-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                    created_at: projectData.saved_at || new Date().toISOString(),
-                    updated_at: projectData.saved_at || new Date().toISOString(),
-                    saved_at: projectData.saved_at || new Date().toISOString(),
-                    creator_id: projectData.project?.creator_id || 1
-                  },
-                  entries: [],
-                  ui: {
-                    ...(projectData.ui || {}),
-                    mode: "theme",
-                    theme: "slate",
-                    bg: "aurora",
-                    bgOpacity: 0.2,
-                    bgBlur: 2,
-                    editorDim: false
-                  },
-                  version: projectData.version || 1
-                };
+              // Parse project JSON and tolerate missing/empty fields.
+              let projectData = JSON.parse(fs.readFileSync(projectFile, 'utf8'));
 
-                // Convert legacy entries
-                if (projectData.chapters?.added) {
-                  migrated.entries.push(
-                    ...projectData.chapters.added.map(ch => ({
-                      type: 'chapter',
-                      id: ch.id || `ch-${Math.random().toString(36).slice(2, 8)}`,
-                      title: ch.title || 'Untitled Chapter',
-                      status: ch.status || 'draft',
-                      tags: ch.tags || [],
-                      synopsis: ch.synopsis || '',
-                      body: ch.body || '',
-                      order_index: ch.order_index || 0,
-                      updated_at: ch.updated_at || projectData.saved_at || new Date().toISOString()
-                    }))
-                  );
-                }
+              // Ensure minimal shape so downstream code can read safely
+              if (!projectData || typeof projectData !== 'object') projectData = {};
+              if (!projectData.project || typeof projectData.project !== 'object') projectData.project = {};
+              if (!Array.isArray(projectData.entries)) projectData.entries = projectData.entries || [];
 
-                // Write back the migrated format
-                fs.writeFileSync(projectFile, JSON.stringify(migrated, null, 2));
-                projectData = migrated;
-              }
-
-              if (!projectData.project || !projectData.project.title) {
-                throw new Error('Invalid project data format: missing project info');
-              }
+              // No migration or strict validation here — the app expects some fields may be empty
+              // Use display fallbacks elsewhere (displayTitle already falls back to item.name)
             } catch (parseError) {
               throw new Error(`Could not read project data: ${parseError.message}`);
             }
@@ -1421,15 +1396,9 @@ function saveUIPrefsDebounced() {
                 }
               }
               
-              // Force sync changes to DB
-              try {
-                await ipcRenderer.invoke("project:sync", {
-                  dir: state.currentProjectDir
-                });
-                dbg("Successfully synced changes to DB");
-              } catch (syncError) {
-                dbg(`Warning: Failed to sync to DB: ${syncError.message}`);
-              }
+              // NOTE: Automatic project->DB upload has been removed. If you
+              // need to perform an upload, do so manually via the server
+              // tooling you control. We skip calling 'project:sync' here.
             }
 
             // Load the project
@@ -1503,9 +1472,10 @@ function saveUIPrefsDebounced() {
     // Hide the old empty overlay
     if (el.empty) { el.empty.classList.add("hidden"); el.empty.style.display = "none"; }
 
-    list.forEach((e, idx) => {
+  dbg(`renderList — rendering ${list.length} visible entries (activeTab=${state.activeTab} selected=${state.selectedId})`);
+  list.forEach((e, idx) => {
       const li = document.createElement("li");
-      li.className = "entry" + (e.id === state.selectedId ? " selected" : "");
+  li.className = "entry" + (entryKey(e) === state.selectedId ? " selected" : "");
       li.dataset.id = e.id;
       li.dataset.type = e.type;
       li.draggable = true;
@@ -1526,7 +1496,10 @@ function saveUIPrefsDebounced() {
       li.appendChild(spacer);
 
       // Click-to-select
-      li.addEventListener("click", () => selectEntry(e.id));
+      li.addEventListener("click", () => {
+        dbg(`renderList: click -> entryKey=${entryKey(e)} id=${e.id} title="${e.title || ''}"`);
+        selectEntry(entryKey(e));
+      });
 
       // Drag events
       li.addEventListener("dragstart", (ev) => {
@@ -1573,7 +1546,8 @@ function saveUIPrefsDebounced() {
     });
 
     if (!state.selectedId && list.length > 0) {
-      state.selectedId = list[0].id;
+      state.selectedId = entryKey(list[0]);
+      dbg(`renderList — no selection; defaulting to ${state.selectedId}`);
       populateEditor(list[0]);
     }
     updateWordCount();
@@ -1650,14 +1624,11 @@ function saveUIPrefsDebounced() {
       nextId = list[at]?.id || list[list.length - 1]?.id || null;
     }
 
-    if (state.selectedId === id) {
-      state.selectedId = nextId;
-      if (nextId) {
-        const next = state.entries.find(e => e.id === nextId);
-        if (next) populateEditor(next); else clearEditor();
-      } else {
-        clearEditor();
-      }
+    const selectedEntry = findEntryByKey(state.selectedId);
+    const nextEntry = nextId ? state.entries.find(e => e.id === nextId) : null;
+    if (selectedEntry && selectedEntry.id === id) {
+      state.selectedId = nextEntry ? entryKey(nextEntry) : null;
+      if (nextEntry) populateEditor(nextEntry); else clearEditor();
     }
 
     renderList();
@@ -1685,10 +1656,19 @@ function saveUIPrefsDebounced() {
     updateWordCount();
   }
 
-  function selectEntry(id) {
-    state.selectedId = id;
-    const entry = state.entries.find(e => e.id === id);
-    if (entry) populateEditor(entry);
+  function selectEntry(idOrKey) {
+    // idOrKey may be a numeric id or a canonical key (code or type:id)
+    dbg(`selectEntry -> requested: ${String(idOrKey)}`);
+    const entry = findEntryByKey(idOrKey) || state.entries.find(e => e.id === idOrKey);
+    if (entry) {
+      dbg(`selectEntry -> resolved to entryKey=${entryKey(entry)} id=${entry.id} title="${entry.title || ''}"`);
+      state.selectedId = entryKey(entry);
+      populateEditor(entry);
+    } else {
+      dbg(`selectEntry -> no entry resolved for ${String(idOrKey)}; storing raw selectedId`);
+      // Fallback: set raw value (may be resolved later)
+      state.selectedId = idOrKey;
+    }
     renderList();
   }
 
@@ -1746,17 +1726,37 @@ function saveUIPrefsDebounced() {
     // Increment counter for this type first
     state.counters[type] = (state.counters[type] || 0) + 1;
     const count = state.counters[type];
-    
-    // Generate a unique ID for the new entry
-    const timestamp = Date.now();
-    const uniqueId = `${type}-${timestamp}-${uid()}`;
-    
+
+    // Determine project id to use as parent in entry codes
+    const projectId = Number(state.project?.id || state.project?.project_id) || 0;
+    const pad = (n) => String(n).padStart(6, '0');
+    const parentPad = String(projectId).padStart(4, '0');
+    const typeCode = type === 'chapter' ? 'CHP' : type === 'note' ? 'NT' : 'RF';
+
+    // Use numeric id (sequence) and full code matching main process format
+    const seq = (() => {
+      const sameType = state.entries.filter(e => e.type === type);
+      // If any existing entries have numeric id or code with trailing number, try to find max
+      let max = 0;
+      for (const e of sameType) {
+        if (typeof e.id === 'number') max = Math.max(max, e.id);
+        else if (e.code && typeof e.code === 'string') {
+          const m = e.code.match(/(\d+)$/);
+          if (m) max = Math.max(max, parseInt(m[1], 10));
+        }
+      }
+      return max + 1;
+    })();
+
     const entry = {
-      id: uniqueId,
+      id: seq,
+      code: `${typeCode}-${parentPad}-${pad(seq)}`,
+      project_id: projectId || undefined,
+      creator_id: state.authUser?.id || state.project?.creator_id || undefined,
       type,
-      title: type === "chapter" ? `Chapter ${count}` :
-             type === "note" ? `Note ${count}` :
-             `Reference ${count}`,
+      title: type === "chapter" ? `Chapter ${seq}` :
+             type === "note" ? `Note ${seq}` :
+             `Reference ${seq}`,
       updated_at: nowISO(),
       created_at: nowISO(),
       order_index,
@@ -1784,8 +1784,8 @@ function saveUIPrefsDebounced() {
       dbg(`reference:create — Creating new reference "${entry.title}" with ID ${entry.id}`);
     }
 
-    // Add to state.entries with proper project code if available
-    entry.project_code = state.project?.code;
+  // Add to state.entries with proper project code if available
+  entry.project_code = state.project?.code;
     state.entries.push(entry);
     
     // Switch to correct tab if needed
@@ -1795,8 +1795,8 @@ function saveUIPrefsDebounced() {
       switchTab(target);
     }
     
-    // Update state and select the new entry
-    state.selectedId = entry.id;
+  // Update state and select the new entry
+  state.selectedId = entryKey(entry);
     
     // Normalize order indices after adding the new entry
     normalizeOrderIndexes();
@@ -1832,7 +1832,7 @@ function saveUIPrefsDebounced() {
 
   // ───────────────── Word Count ─────────────────
   function updateWordCount() {
-  const cur = state.entries.find(e => e.id === state.selectedId);
+  const cur = findEntryByKey(state.selectedId);
   if (!el.wordCount) return;
 
   if (!cur) {
@@ -1906,6 +1906,20 @@ function saveUIPrefsDebounced() {
     state.counters = next;
   }
 
+  // Helper to produce a stable key for an entry (prefers code when available,
+  // falls back to type:id). This keeps the selection stable when files use
+  // either compact numeric ids or canonical codes.
+  function entryKey(e) {
+    if (!e) return null;
+    if (e.code) return String(e.code);
+    return `${e.type}:${e.id}`;
+  }
+
+  function findEntryByKey(key) {
+    if (key === undefined || key === null) return undefined;
+    return state.entries.find(e => entryKey(e) === key || e.id === key || String(e.id) === String(key));
+  }
+
   function collectProjectData() {
     // First ensure all entries have required fields
     state.entries = state.entries.map(entry => {
@@ -1914,8 +1928,8 @@ function saveUIPrefsDebounced() {
       return entry;
     });
 
-    // Update the currently selected entry
-    const cur = state.entries.find(e => e.id === state.selectedId);
+  // Update the currently selected entry
+  const cur = findEntryByKey(state.selectedId);
     if (cur) {
       cur.title = el.titleInput?.value || cur.title;
       if (cur.type === "chapter") {
@@ -1949,27 +1963,20 @@ function saveUIPrefsDebounced() {
     // No change tracking - just get the current project code
     const projectCode = state.project?.code;
 
+    // Include canonical project metadata (preserve id and creator when present).
+    const projMeta = {
+      title: state.projectName,
+      name: state.projectName,
+      code: projectCode, // Preserve project code if it exists
+      saved_at: nowISO(),
+      updated_at: nowISO()
+    };
+    if (state.project && state.project.id) projMeta.id = state.project.id;
+    if (state.project && state.project.creator_id) projMeta.creator_id = state.project.creator_id;
+
     return {
-      project: { 
-        title: state.projectName,
-        name: state.projectName,
-        code: projectCode, // Preserve project code if it exists
-        saved_at: nowISO(),
-        updated_at: nowISO()
-      },
+      project: projMeta,
       entries: state.entries.map(stripUndefined),
-      ui: {
-        activeTab: state.activeTab,
-        selectedId: state.selectedId,
-        counters: state.counters,
-        // persist UI prefs
-        mode: state.uiPrefs.mode,
-        theme: state.uiPrefs.theme,
-        bg: state.uiPrefs.bg,
-        bgOpacity: state.uiPrefs.bgOpacity,
-        bgBlur: state.uiPrefs.bgBlur,
-        editorDim: state.uiPrefs.editorDim,
-      },
       version: 1
     };
   }
@@ -2017,15 +2024,9 @@ function saveUIPrefsDebounced() {
           dbg(`workspace:save — Created project directory: ${projectDir}`);
         }
         
-        // Track changes for DB sync if needed
-        if (syncToDb && ipcRenderer) {
-          const result = await ipcRenderer.invoke('db:trackChanges', {
-            entries: state.entries,
-            projectDir
-          });
-          if (!result?.ok) {
-            dbg(`workspace:save — Warning: Failed to track changes for DB sync: ${result?.error}`);
-          }
+        // Tracking for DB sync has been removed — do not invoke main handlers
+        if (syncToDb) {
+          dbg('workspace:save — syncToDb requested but uploads are disabled; skipping change-tracking');
         }
       }
 
@@ -2050,7 +2051,7 @@ function saveUIPrefsDebounced() {
           }
         });
         
-        // Initialize empty project.json
+        // Initialize empty project.json (do NOT store UI into project.json)
         const initialData = {
           project: {
             title: state.projectName || "Untitled Project",
@@ -2060,11 +2061,6 @@ function saveUIPrefsDebounced() {
             saved_at: nowISO()
           },
           entries: [],
-          ui: {
-            activeTab: "chapters",
-            selectedId: null,
-            counters: { chapter: 1, note: 1, reference: 1 }
-          },
           version: 1
         };
         
@@ -2105,7 +2101,7 @@ function saveUIPrefsDebounced() {
       const projectRootDir = path.dirname(path.dirname(SAVE_FILE)); // Go up two levels from project.json to get root
       
       // Handle new and updated entries
-      for (const entry of state.entries) {
+          for (const entry of state.entries) {
         const type = entry.type === 'chapter' ? 'chapters' : 
                     entry.type === 'note' ? 'notes' : 'refs';
                     
@@ -2115,9 +2111,133 @@ function saveUIPrefsDebounced() {
           fs.mkdirSync(typeDir, { recursive: true });
         }
         
-        // Save each entry to its own file
-        const entryFile = path.join(typeDir, `${entry.id}.json`);
-        fs.writeFileSync(entryFile, JSON.stringify(entry, null, 2), "utf8");
+        // Save each entry to its own file.
+        // Prefer to reuse an existing on-disk file for the same logical entry (match by id or code)
+        // so we preserve the project's original filename format (compact or canonical).
+        let filename;
+        try {
+          // If this entry was loaded from a specific filename, prefer reusing it
+          if (entry.__filename && fs.existsSync(path.join(typeDir, entry.__filename))) {
+            filename = entry.__filename;
+            dbg(`workspace:save — reusing original filename ${type}/${filename} for entry id=${entry.id} code=${entry.code}`);
+          } else {
+          // Look for an existing file in the type directory that matches this entry by id or code
+          const candidates = fs.readdirSync(typeDir).filter(f => f.endsWith('.json'));
+          let matched = null;
+          for (const f of candidates) {
+            try {
+              const p = path.join(typeDir, f);
+              const raw = fs.readFileSync(p, 'utf8');
+              const obj = JSON.parse(raw);
+              if ((obj && (obj.code && entry.code && obj.code === entry.code)) || (obj && obj.id !== undefined && entry.id !== undefined && Number(obj.id) === Number(entry.id))) {
+                matched = f;
+                break;
+              }
+            } catch (e) { /* ignore candidate parse errors */ }
+          }
+
+          if (matched) {
+            filename = matched;
+            dbg(`workspace:save — reusing existing filename ${type}/${filename} for entry id=${entry.id} code=${entry.code}`);
+          } else {
+            const prefix = entry.type === 'chapter' ? 'CH' : entry.type === 'note' ? 'NT' : 'RF';
+            // Try to extract numeric id from entry.id
+            let idNum = null;
+            if (typeof entry.id === 'number') idNum = entry.id;
+            else if (typeof entry.id === 'string') {
+              const m = entry.id.match(/(\d+)/);
+              if (m) idNum = parseInt(m[1], 10);
+            }
+            if (idNum !== null && Number.isFinite(idNum)) filename = `${prefix}${idNum}.json`;
+            else if (entry.id !== undefined && entry.id !== null) filename = `${String(entry.id)}.json`;
+            else if (entry.code && typeof entry.code === 'string' && entry.code.trim()) filename = `${entry.code}.json`;
+            else filename = `${Date.now()}-${Math.random().toString(36).slice(2,8)}.json`;
+          }
+          }
+        } catch (e) {
+          // Fallback: prefer canonical code if available
+          if (entry.code && typeof entry.code === 'string' && entry.code.trim()) filename = `${entry.code}.json`;
+          else filename = `${Date.now()}-${Math.random().toString(36).slice(2,8)}.json`;
+        }
+
+        // Build a sanitized per-item object using an explicit whitelist of allowed keys per type.
+        // This prevents any project-level fields (name, saved_at, version, ui, entries, project)
+        // from ever being written into individual entry files.
+        function buildSanitizedRawForWrite(view) {
+          const raw = view.__raw || {};
+          const type = view.type || raw.type || 'chapter';
+          const allowedByType = {
+            // Note: intentionally omit `order_index` from per-item files — it belongs in data/project.json only
+            chapter: ['id','code','project_id','creator_id','title','content','body','status','summary','synopsis','tags','created_at','updated_at','word_goal'],
+            note: ['id','code','project_id','creator_id','title','content','body','tags','category','pinned','created_at','updated_at'],
+            reference: ['id','code','project_id','creator_id','title','content','body','tags','reference_type','summary','source_link','created_at','updated_at']
+          };
+
+          const allow = allowedByType[type] || allowedByType.chapter;
+          const out = {};
+
+          // Copy allowed keys from raw when present
+          for (const k of allow) {
+            if (Object.prototype.hasOwnProperty.call(raw, k)) out[k] = raw[k];
+          }
+
+          // Fill sensible defaults / map UI view fields into allowed keys
+          if (!out.id && view.id !== undefined) out.id = view.id;
+          if (!out.code && view.code !== undefined) out.code = view.code;
+          if (!out.title && view.title !== undefined) out.title = view.title;
+          // Preserve the original key used by the file for the main text field.
+          // Priority: if raw used 'content' keep/update 'content'; else if raw used 'body' keep/update 'body';
+          // otherwise choose a sensible default per type (chapters prefer 'content').
+          const preferredTextKey = (raw && Object.prototype.hasOwnProperty.call(raw,'content')) ? 'content'
+            : (raw && Object.prototype.hasOwnProperty.call(raw,'body')) ? 'body'
+            : (type === 'chapter' ? 'content' : 'body');
+          if (preferredTextKey === 'content') {
+            out.content = (view.body !== undefined) ? view.body : (raw.content !== undefined ? raw.content : (raw.body !== undefined ? raw.body : ''));
+          } else {
+            out.body = (view.body !== undefined) ? view.body : (raw.body !== undefined ? raw.body : (raw.content !== undefined ? raw.content : ''));
+          }
+          if (allow.includes('tags')) out.tags = Array.isArray(view.tags) ? view.tags.slice() : (Array.isArray(raw.tags) ? raw.tags.slice() : []);
+
+          // timestamps
+          out.updated_at = nowISO();
+          if (!out.created_at) out.created_at = view.created_at || raw.created_at || nowISO();
+
+          // type-specific fields mapped from view when present
+          if (type === 'chapter') {
+            if (view.status !== undefined) out.status = view.status;
+            if (view.synopsis !== undefined) {
+              if (Object.prototype.hasOwnProperty.call(raw,'synopsis')) out.synopsis = view.synopsis;
+              else if (Object.prototype.hasOwnProperty.call(raw,'summary')) out.summary = view.synopsis;
+              else out.synopsis = view.synopsis;
+            }
+            if (view.word_goal !== undefined) out.word_goal = view.word_goal;
+          } else if (type === 'note') {
+            if (view.category !== undefined) out.category = view.category;
+            if (view.pinned !== undefined) out.pinned = !!view.pinned;
+          } else if (type === 'reference') {
+            if (view.reference_type !== undefined) out.reference_type = view.reference_type;
+            if (view.summary !== undefined) out.summary = view.summary;
+            if (view.source_link !== undefined) out.source_link = view.source_link;
+          }
+
+          // Do not write order_index into per-item files; project-level ordering belongs in data/project.json
+
+          // Log any dropped keys for debugging (best-effort)
+          try {
+            const rawKeys = Object.keys(raw || {});
+            const dropped = rawKeys.filter(k => !allow.includes(k));
+            if (dropped.length) dbg(`workspace:save — dropping disallowed keys from ${type} (id=${out.id}): ${dropped.join(', ')}`);
+          } catch (e) {}
+
+          return out;
+        }
+
+  const view = entry;
+  const rawToWrite = buildSanitizedRawForWrite(view);
+        const entryFile = path.join(typeDir, filename);
+        fs.writeFileSync(entryFile, JSON.stringify(rawToWrite, null, 2), "utf8");
+        // Log exact file written for debugging of save-back behavior
+        try { dbg(`workspace:save — wrote ${type}/${filename} (code=${rawToWrite.code ?? 'n/a'} id=${rawToWrite.id ?? 'n/a'})`); } catch (e) { /* best-effort */ }
       }
       
       // Update project.json without the change tracking arrays
@@ -2127,13 +2247,53 @@ function saveUIPrefsDebounced() {
       delete data.refs;
 
       // Ensure project.json directory exists
-      ensureDir(SAVE_FILE);
+      try {
+        const pjDir = path.dirname(SAVE_FILE);
+        if (!fs.existsSync(pjDir)) fs.mkdirSync(pjDir, { recursive: true });
+      } catch (e) { /* best-effort */ }
       
       // Log save operation
       dbg(`workspace:save — Saving ${state.entries.length} total entries to individual files`);
       
-      // Save updated project.json
-      fs.writeFileSync(SAVE_FILE, JSON.stringify(data, null, 2), "utf8");
+      // Merge with any existing project.json to avoid dropping fields (id, creator_id, created_at, etc.)
+      try {
+        let existing = {};
+        if (fs.existsSync(SAVE_FILE)) {
+          try { existing = JSON.parse(fs.readFileSync(SAVE_FILE, 'utf8')) || {}; } catch (e) { existing = {}; }
+        }
+        const merged = Object.assign({}, existing);
+        // Only persist a minimal, allowed set of project-level keys to match the example format.
+        // Do NOT write project-level UI or saved metadata (name, saved_at, version) into project.json.
+        const allowedProjectKeys = ['id','code','title','creator_id','created_at','updated_at'];
+        merged.project = {};
+        for (const k of allowedProjectKeys) {
+          if (data.project && data.project[k] !== undefined) merged.project[k] = data.project[k];
+          else if (existing.project && existing.project[k] !== undefined) merged.project[k] = existing.project[k];
+        }
+        // Defensive: remove any stray project-level keys we don't want persisted here
+        delete merged.project.name;
+        delete merged.project.saved_at;
+        delete merged.project.version;
+        delete merged.version;
+
+        // Write minimal index-like entries into project.json to match the example project format.
+        // We intentionally DO NOT embed per-item full content (content/body/tags/project_id/etc.) here.
+        merged.entries = (state.entries || []).map(view => {
+          const raw = (view && view.__raw) ? view.__raw : {};
+          return {
+            id: raw.id !== undefined ? raw.id : view.id,
+            code: raw.code !== undefined ? raw.code : view.code,
+            type: view.type || raw.type,
+            title: raw.title !== undefined ? raw.title : view.title,
+            order_index: raw.order_index !== undefined ? raw.order_index : (view.order_index ?? 0),
+            updated_at: raw.updated_at || view.updated_at || nowISO()
+          };
+        });
+        fs.writeFileSync(SAVE_FILE, JSON.stringify(merged, null, 2), "utf8");
+      } catch (e) {
+        // Fallback to writing data directly
+        fs.writeFileSync(SAVE_FILE, JSON.stringify(data, null, 2), "utf8");
+      }
       const t = new Date();
       el.lastSaved && (el.lastSaved.textContent = `Last saved • ${t.toLocaleTimeString()}`);
       el.saveState && (el.saveState.textContent = "Saved");
@@ -2181,8 +2341,10 @@ function saveUIPrefsDebounced() {
         
         // Load entries from individual files
         const projectRootDir = path.dirname(path.dirname(SAVE_FILE)); // Go up two levels from project.json to get root
-        const entryTypes = ['chapters', 'notes', 'refs'];
-        const entries = [];
+  const entryTypes = ['chapters', 'notes', 'refs'];
+  const entries = [];
+  // per-type counters for debug reporting
+  const loadStats = { chapters: 0, notes: 0, refs: 0 };
         
         for (const type of entryTypes) {
           const typeDir = path.join(projectRootDir, type);
@@ -2191,24 +2353,145 @@ function saveUIPrefsDebounced() {
             for (const file of files) {
               try {
                 const entryPath = path.join(typeDir, file);
-                const entryData = JSON.parse(fs.readFileSync(entryPath, 'utf8'));
-                entries.push(entryData);
+                const raw = JSON.parse(fs.readFileSync(entryPath, 'utf8'));
+
+                // Build a lightweight view for UI while preserving the original raw object and filename
+                const inferredType = type === 'chapters' ? 'chapter' : type === 'notes' ? 'note' : 'reference';
+                const idFromRaw = (raw && raw.id !== undefined) ? (typeof raw.id === 'number' ? raw.id : Number(String(raw.id).match(/(\d+)/)?.[1])) : undefined;
+                const codeFromRaw = raw && raw.code ? String(raw.code) : null;
+
+                const view = {
+                  // core fields used by the UI
+                  id: Number.isFinite(idFromRaw) ? idFromRaw : undefined,
+                  code: codeFromRaw || undefined,
+                  type: raw.type || inferredType,
+                  title: raw.title || raw.name || '',
+                  // prefer body, otherwise content
+                  body: raw.body !== undefined ? raw.body : (raw.content !== undefined ? raw.content : ''),
+                  tags: Array.isArray(raw.tags) ? raw.tags.slice() : [],
+                  // preserve timestamps
+                  created_at: raw.created_at || raw.createdAt || undefined,
+                  updated_at: raw.updated_at || raw.updatedAt || undefined,
+                  // keep original raw and location for save-back
+                  __raw: raw,
+                  __filename: file,
+                  __filepath: entryPath,
+                };
+
+                entries.push(view);
+                loadStats[type] = (loadStats[type] || 0) + 1;
+                dbg(`workspace:load — read ${type}/${file} (id=${view.id ?? 'n/a'} code=${view.code ?? 'n/a'})`);
               } catch (entryError) {
                 dbg(`Warning: Failed to load entry file ${file}: ${entryError.message}`);
               }
             }
           }
         }
-        
-        // Add loaded entries to data
-        data.entries = entries;
-        
-        // Validate project structure
-        const requiredFields = ['title', 'name', 'saved_at', 'updated_at'];
-        const missing = requiredFields.filter(field => !data.project[field]);
-        if (missing.length) {
-          throw new Error(`Invalid project data format: missing required fields: ${missing.join(', ')}`);
+
+        // Prefer canonical entries (those with full codes like CHP-.../NT-.../RF-...).
+        // If only a compact filename exists (CH1.json etc.), promote it to the canonical format on disk
+        // so loader/saver remain consistent.
+        const projectId = (data.project && (data.project.id || data.project.project_id)) ? Number(data.project.id || data.project.project_id) : 0;
+        const pad = (n) => String(n).padStart(6, '0');
+        const parentPad = String(projectId).padStart(4, '0');
+        const canonicalMap = new Map();
+
+        for (const item of entries) {
+          // item is our view object; keep raw object on __raw, and original filename on __filename
+          const view = item;
+          const raw = view.__raw || {};
+          let code = raw.code || view.code || undefined;
+
+          // If entry has no code in raw, try to infer from filename (compact form CH1/NT1/RF1)
+          if (!code && view.__filename) {
+            const m = view.__filename.match(/^(CH|NT|RF)(\d+)\.json$/i);
+            if (m) {
+              const prefix = m[1].toUpperCase();
+              const n = parseInt(m[2], 10);
+              if (prefix === 'CH') code = `CHP-${parentPad}-${pad(n)}`;
+              else if (prefix === 'NT') code = `NT-${parentPad}-${pad(n)}`;
+              else if (prefix === 'RF') code = `RF-${parentPad}-${pad(n)}`;
+            }
+          }
+
+          // If we still don't have a code but view.id is numeric, synthesize a code for UI only
+          if (!code && typeof view.id === 'number') {
+            if (view.type === 'chapter') code = `CHP-${parentPad}-${pad(view.id)}`;
+            else if (view.type === 'note') code = `NT-${parentPad}-${pad(view.id)}`;
+            else if (view.type === 'reference') code = `RF-${parentPad}-${pad(view.id)}`;
+          }
+
+          // Use a logical key based on type+id (prefer id). This keeps entries identified by their on-disk id.
+          const logicalId = (typeof view.id === 'number') ? String(view.id) : (view.code || view.title || Math.random());
+          const key = `${view.type}:${logicalId}`;
+
+          if (!canonicalMap.has(key)) {
+            // attach the resolved code to the view (in-memory only) but do not modify raw on disk
+            if (code) view.code = code;
+            canonicalMap.set(key, view);
+          } else {
+            // Merge fields into existing view (prefer earlier file as authoritative on-disk)
+            const existing = canonicalMap.get(key);
+            // merge raw fields where missing in existing.__raw
+            for (const k of Object.keys(raw)) {
+              if (existing.__raw && (existing.__raw[k] === undefined || existing.__raw[k] === null || existing.__raw[k] === "")) existing.__raw[k] = raw[k];
+            }
+            // merge view-level fields conservatively
+            for (const k of ['title','body','tags','created_at','updated_at']) {
+              if ((existing[k] === undefined || existing[k] === null || existing[k] === '') && (view[k] !== undefined)) existing[k] = view[k];
+            }
+            dbg(`workspace:load — found duplicate logical entry ${key}; merged in-memory`);
+          }
         }
+
+        data.entries = Array.from(canonicalMap.values());
+        // Sanitize any entries that may have been stored verbatim inside project.json
+        // (some older projects included full per-item objects there). We must
+        // ensure per-item raw objects do not contain project-level metadata.
+        function sanitizeRawForType(obj, type) {
+          const allowed = {
+            chapter: ['id','code','project_id','creator_id','title','content','body','status','summary','synopsis','tags','created_at','updated_at','word_goal','order_index'],
+            note: ['id','code','project_id','creator_id','title','content','body','tags','category','pinned','created_at','updated_at','order_index'],
+            reference: ['id','code','project_id','creator_id','title','content','body','tags','reference_type','summary','source_link','created_at','updated_at','order_index']
+          };
+          const allow = allowed[type] || [];
+          const out = {};
+          if (!obj || typeof obj !== 'object') return out;
+          for (const k of allow) {
+            if (Object.prototype.hasOwnProperty.call(obj, k)) out[k] = obj[k];
+          }
+          return out;
+        }
+        for (const ent of data.entries) {
+          try {
+            const typ = ent.type || (ent.__raw && ent.__raw.type) || (ent.code && (String(ent.code).startsWith('CHP') ? 'chapter' : String(ent.code).startsWith('NT') ? 'note' : String(ent.code).startsWith('RF') ? 'reference' : null));
+            if (ent.__raw && typeof ent.__raw === 'object') {
+              ent.__raw = sanitizeRawForType(ent.__raw, typ);
+            } else {
+              // If there was no __raw, build one from the entry values conservatively
+              ent.__raw = sanitizeRawForType(ent, typ);
+            }
+            // Ensure we don't carry project-level keys accidentally
+            delete ent.__raw.name;
+            delete ent.__raw.saved_at;
+            delete ent.__raw.version;
+            delete ent.__raw.ui;
+            delete ent.__raw.entries;
+            delete ent.__raw.project;
+          } catch (e) { /* best-effort */ }
+        }
+        dbg(`workspace:load — entries loaded: chapters=${loadStats.chapters}, notes=${loadStats.notes}, refs=${loadStats.refs}; canonical entries=${data.entries.length}`);
+
+        // NOTE: do not normalize or rewrite entry structure here; keep original per-file JSON shapes authoritative.
+
+  // Preserve project object in runtime state for code/id generation
+  state.project = data.project || {};
+        
+        // Ensure minimal project fields exist; don't treat missing optional fields as fatal
+        data.project.title = data.project.title || data.project.name || path.basename(projectRootDir) || "Untitled Project";
+        data.project.name = data.project.name || data.project.title;
+        data.project.saved_at = data.project.saved_at || data.project.created_at || new Date().toISOString();
+        data.project.updated_at = data.project.updated_at || data.project.saved_at;
       } catch (parseError) {
         dbg(`Error parsing project data: ${parseError.message}`);
         throw new Error('Project data is corrupted or in invalid format');
@@ -2221,8 +2504,8 @@ function saveUIPrefsDebounced() {
       normalizeOrderIndexes();
 
       const ui = data?.ui || {};
-      state.activeTab = ui.activeTab || "chapters";
-      state.selectedId = ui.selectedId || (visibleEntries()[0]?.id ?? null);
+  state.activeTab = ui.activeTab || "chapters";
+  state.selectedId = ui.selectedId || (visibleEntries()[0] ? entryKey(visibleEntries()[0]) : null);
       state.counters = ui.counters || state.counters;
       if (!ui.counters) deriveCountersIfMissing();
 
@@ -2241,8 +2524,8 @@ function saveUIPrefsDebounced() {
         t.setAttribute("aria-selected", active ? "true" : "false");
       });
 
-      const sel = state.entries.find(e=>e.id===state.selectedId) || visibleEntries()[0];
-      if (sel) { state.selectedId = sel.id; populateEditor(sel); }
+  const sel = findEntryByKey(state.selectedId) || visibleEntries()[0];
+  if (sel) { state.selectedId = entryKey(sel); populateEditor(sel); }
 
       renderList();
       state.dirty = false;
@@ -2356,34 +2639,34 @@ window.addEventListener("unhandledrejection", (e) => _dbgAppendToFile(`[${new Da
     touchSave();
   });
   el.titleInput?.addEventListener("input", () => {
-    const e = state.entries.find(x => x.id === state.selectedId);
+    const e = findEntryByKey(state.selectedId);
     if (!e) return;
     e.title = el.titleInput.value;
     renderList();
     touchSave();
   });
   el.status?.addEventListener("change", () => {
-    const e = state.entries.find(x => x.id === state.selectedId);
+    const e = findEntryByKey(state.selectedId);
     if (!e || e.type !== "chapter") return;
     e.status = el.status.value;
     renderList();
     touchSave();
   });
   el.tags?.addEventListener("blur", () => {
-    const e = state.entries.find(x => x.id === state.selectedId);
+    const e = findEntryByKey(state.selectedId);
     if (!e) return;
     e.tags = parseTags(el.tags.value);
     touchSave();
   });
   el.synopsis?.addEventListener("input", () => {
-    const e = state.entries.find(x => x.id === state.selectedId);
+    const e = findEntryByKey(state.selectedId);
     if (!e) return;
     if (e.type === "chapter") e.synopsis = el.synopsis.value;
     else if (e.type === "reference") e.summary = el.synopsis.value;
     touchSave();
   });
   el.body?.addEventListener("input", () => {
-    const e = state.entries.find(x => x.id === state.selectedId);
+    const e = findEntryByKey(state.selectedId);
     if (!e) return;
     e.body = el.body.value;
     updateWordCount();
@@ -2391,7 +2674,7 @@ window.addEventListener("unhandledrejection", (e) => _dbgAppendToFile(`[${new Da
   });
   // Chapter-only: word target
   el.wordTarget?.addEventListener("input", () => {
-    const e = state.entries.find(x => x.id === state.selectedId);
+    const e = findEntryByKey(state.selectedId);
     if (!e || e.type !== "chapter") return;
     e.word_target = parseInt(el.wordTarget.value || 0, 10) || 0;
     updateWordCount();
@@ -2399,20 +2682,20 @@ window.addEventListener("unhandledrejection", (e) => _dbgAppendToFile(`[${new Da
   });
   // Notes-only
   el.noteCategory?.addEventListener("change", () => {
-    const e = state.entries.find(x => x.id === state.selectedId);
+    const e = findEntryByKey(state.selectedId);
     if (!e || e.type !== "note") return;
     e.category = el.noteCategory.value;
     touchSave();
   });
   el.notePin?.addEventListener("change", () => {
-    const e = state.entries.find(x => x.id === state.selectedId);
+    const e = findEntryByKey(state.selectedId);
     if (!e || e.type !== "note") return;
     e.pinned = !!el.notePin.checked;
     touchSave();
   });
   // References-only
   el.referenceType?.addEventListener("change", () => {
-  const e = state.entries.find(x => x.id === state.selectedId);
+  const e = findEntryByKey(state.selectedId);
   if (!e || e.type !== "reference") return;
   e.reference_type = el.referenceType.value;
   touchSave();
@@ -2420,7 +2703,7 @@ window.addEventListener("unhandledrejection", (e) => _dbgAppendToFile(`[${new Da
 
 // Word goal (chapters only)
 el.wordGoal?.addEventListener("input", () => {
-  const e = state.entries.find(x => x.id === state.selectedId);
+  const e = findEntryByKey(state.selectedId);
   if (!e || e.type !== "chapter") return;
   const g = parseInt(el.wordGoal.value, 10);
   e.word_goal = Number.isFinite(g) && g > 0 ? g : 0;
@@ -2429,7 +2712,7 @@ el.wordGoal?.addEventListener("input", () => {
 });
 
   el.sourceLink?.addEventListener("input", () => {
-    const e = state.entries.find(x => x.id === state.selectedId);
+    const e = findEntryByKey(state.selectedId);
     if (!e || e.type !== "reference") return;
     e.source_link = el.sourceLink.value;
     touchSave();
@@ -2661,7 +2944,7 @@ el.wordGoal?.addEventListener("input", () => {
 
   // Delete current entry from the editor button
   el.deleteBtn?.addEventListener("click", () => {
-    const cur = state.entries.find(x => x.id === state.selectedId);
+    const cur = findEntryByKey(state.selectedId);
     if (cur) confirmAndDelete(cur.id);
   });
   
@@ -2722,7 +3005,7 @@ el.wordGoal?.addEventListener("input", () => {
 
     // Delete current entry (Ctrl/Cmd+Delete)
     if (mod && e.key === "Backspace") {
-      const cur = state.entries.find(x => x.id === state.selectedId);
+      const cur = findEntryByKey(state.selectedId);
       if (cur) {
         e.preventDefault();
         confirmAndDelete(cur.id);
@@ -2744,7 +3027,7 @@ el.wordGoal?.addEventListener("input", () => {
     
      // Handle delete command from menu
     ipcRenderer.on("menu:delete", () => {
-      const cur = state.entries.find(x => x.id === state.selectedId);
+      const cur = findEntryByKey(state.selectedId);
       if (cur) confirmAndDelete(cur.id);
     });
   }

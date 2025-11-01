@@ -129,16 +129,14 @@ function mapDbEntry(entry) {
     debugLog(`[project:map] Mapping entry ${entry.id || entry.code} (${type})`);
     
     const mapped = {
-        // Prefer DB code over local ID
-        id: entry.code || entry.id,
+        id: entry.id || entry.code,
         type,
         title: entry.title || '(Untitled)',
         tags: Array.isArray(entry.tags) ? entry.tags : [],
-        // Prefer number for DB entries, order_index for local
-        order_index: entry.code ? (entry.number || 0) : (entry.order_index || 0),
+        order_index: entry.number || entry.order_index || 0,
         updated_at: entry.updated_at || new Date().toISOString(),
         created_at: entry.created_at || new Date().toISOString(),
-        project_code: entry.project_code || entry.code?.split('-')?.[1]
+        project_code: entry.project_code
     };
     
     debugLog(`[project:map] Mapped fields: ${JSON.stringify({
@@ -204,9 +202,9 @@ function validateProjectData(data) {
 
     // Validate each entry has required fields
     data.entries.forEach((entry, idx) => {
-        if (!entry.id && !entry.code) {
-            dbg(`[project:validate] Entry ${idx} missing both ID and code`);
-            throw new Error(`Entry ${idx} missing both id and code fields`);
+        if (!entry.id) {
+            dbg(`[project:validate] Entry ${idx} missing ID`);
+            throw new Error(`Entry ${idx} missing required field: id`);
         }
         if (!entry.type || !['chapter', 'note', 'reference'].includes(entry.type)) {
             dbg(`[project:validate] Entry ${entry.id} has invalid type: ${entry.type}`);
