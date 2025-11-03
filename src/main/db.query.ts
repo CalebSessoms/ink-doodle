@@ -109,4 +109,74 @@ export async function getRefIdsForCreator(creatorId: string): Promise<string[]> 
   return out;
 }
 
-export default { getColumnValue, getFirstRow, getProjectIdsForCreator, getChapterIdsForCreator, getNoteIdsForCreator, getRefIdsForCreator };
+/**
+ * Get a single project row by its `code` (the string used locally as the project id).
+ * Returns the raw row object or null when not found.
+ */
+export async function getProjectInfo(projectCode: string): Promise<Record<string, any> | null> {
+  if (!projectCode || typeof projectCode !== 'string') throw new Error('projectCode must be a non-empty string');
+  // First try matching against the `code` column (preferred). If that
+  // returns nothing or errors, fall back to comparing the `id` column as
+  // text. This keeps us robust against schemas where the identifying
+  // string is stored in `id` or `code`.
+  try {
+    const resCode = await pool.query(`SELECT * FROM projects WHERE code = $1 LIMIT 1;`, [projectCode]);
+    if (resCode.rows && resCode.rows.length > 0) return resCode.rows[0] as Record<string, any>;
+  } catch (e) {
+    // ignore and try id-as-text fallback
+  }
+
+  try {
+    const resId = await pool.query(`SELECT * FROM projects WHERE CAST(id AS text) = $1 LIMIT 1;`, [projectCode]);
+    if (resId.rows && resId.rows.length > 0) return resId.rows[0] as Record<string, any>;
+  } catch (e) {
+    // if this errors, bubble up so caller sees DB problem
+    throw e;
+  }
+
+  return null;
+}
+
+/**
+ * Get all chapters, notes, and refs for a project identified by its `code`.
+ * Returns an object with arrays: { chapters, notes, refs }.
+ */
+export async function getProjectEntries(projectCode: string): Promise<{ chapters: any[]; notes: any[]; refs: any[] }> {
+  // Resolve project id first
+  const project = await getProjectInfo(projectCode);
+  if (!project) return { chapters: [], notes: [], refs: [] };
+  const projectId = project.id;
+
+  const chaptersQ = `SELECT id, code, project_id, creator_id, number, title, content,
+                status, summary, tags, created_at, updated_at, word_goal
+         FROM chapters
+         WHERE project_id = $1
+         ORDER BY number NULLS LAST, id;`;
+
+  const notesQ = `SELECT id, code, project_id, creator_id, number, title, content,
+                tags, category, pinned, created_at, updated_at
+         FROM notes
+         WHERE project_id = $1
+         ORDER BY number NULLS LAST, id;`;
+
+  const refsQ = `SELECT id, code, project_id, creator_id, number, title, tags,
+                reference_type, summary, source_link, content,
+                created_at, updated_at
+         FROM refs
+         WHERE project_id = $1
+         ORDER BY number NULLS LAST, id;`;
+
+  const [chapRes, noteRes, refRes] = await Promise.all([
+    pool.query(chaptersQ, [projectId]),
+    pool.query(notesQ, [projectId]),
+    pool.query(refsQ, [projectId])
+  ]);
+
+  return {
+    chapters: chapRes.rows || [],
+    notes: noteRes.rows || [],
+    refs: refRes.rows || []
+  };
+}
+
+export default { getColumnValue, getFirstRow, getProjectIdsForCreator, getChapterIdsForCreator, getNoteIdsForCreator, getRefIdsForCreator, getProjectInfo, getProjectEntries };

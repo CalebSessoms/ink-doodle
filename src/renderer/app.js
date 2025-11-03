@@ -637,52 +637,6 @@ async function _wireDebugLogPathEarly() {
     }));
   }
 
-  // Load first remote project (for the signed-in user) + its chapters (read-only)
-  async function loadRemoteSnapshotIntoState() {
-    if (!ipcRenderer) return;
-
-    // First check if sync is enabled
-    const syncEnabled = await ipcRenderer.invoke('sync:isEnabled')
-      .catch(() => false);
-    
-    if (!syncEnabled) {
-      dbg('Remote snapshot load skipped - DB sync is disabled');
-      return;
-    }
-
-    // 1) list remote projects for current auth user
-    const projRes = await ipcRenderer.invoke("projects:listRemote").catch(e => ({ ok:false, error:String(e) }));
-    if (!projRes?.ok || !Array.isArray(projRes.items) || projRes.items.length === 0) {
-      dbg(`remote load skipped: ${projRes?.error || "no remote projects found"}`);
-      return;
-    }
-    const first = projRes.items[0];
-    const projectId = first.id;
-    dbg(`remote: using project ${first.title || projectId}`);
-
-    // 2) chapters for that project (pass numeric id)
-    const chRes = await ipcRenderer.invoke("chapters:listByProject", { projectIdOrCode: String(projectId) })
-      .catch(e => ({ ok:false, error:String(e) }));
-    if (!chRes?.ok) {
-      dbg(`remote chapters load failed: ${chRes?.error || "unknown error"}`);
-      return;
-    }
-
-    // 3) map → state and render (read-only swap)
-    const chapters = mapDbChapters(chRes.items || []);
-    const others = state.entries.filter(e => e.type !== "chapter");
-    state.entries = chapters.concat(others);
-
-    const vis = visibleEntries();
-      if (!state.selectedId && vis.length) state.selectedId = entryKey(vis[0]);
-    if (state.selectedId && !findEntryByKey(state.selectedId) && vis.length) {
-      state.selectedId = entryKey(vis[0]);
-    }
-
-    renderList();
-    dbg(`remote: loaded ${chapters.length} chapters into UI (read-only).`);
-  }
-
   function timeAgo(iso) {
     if (!iso) return "—";
     const d = Date.now() - new Date(iso).getTime();
@@ -1205,22 +1159,8 @@ function saveUIPrefsDebounced() {
     // Ensure the picker accepts pointer events and is visible
     picker.style.pointerEvents = "auto";
     picker.style.display = "flex";
-    
-    // Only sync if enabled
-    const syncEnabled = await ipcRenderer.invoke('sync:isEnabled')
-      .catch(() => false);
-
-    if (syncEnabled) {
-      dbg("Syncing with DB before showing project picker...");
-      const syncResult = await ipcRenderer.invoke("db:syncFromDB");
-      if (!syncResult.ok) {
-        dbg(`Warning: DB sync failed: ${syncResult.error}`);
-      } else {
-        dbg(`DB sync completed: ${syncResult.projectCount} projects synced`);
-      }
-    } else {
-      dbg("DB sync disabled - skipping sync before showing picker");
-    }
+    // NOTE: DB->local syncs have been removed. The picker shows local projects only.
+    dbg('showProjectPicker: skipping DB->local sync (disabled)');
     
     refreshProjectList();
 
@@ -1587,22 +1527,23 @@ function saveUIPrefsDebounced() {
 
   // ───────────────── Delete ─────────────────
   function confirmAndDelete(id) {
-    const entry = state.entries.find(e => e.id === id);
+    const entry = state.entries.find(e => e.id === id || e.code === id || entryKey(e) === String(id));
     if (!entry) return;
     const kind = entry.type === "chapter" ? "Chapter" :
                  entry.type === "note" ? "Note" : "Reference";
     const name = entry.title || `(Untitled ${kind})`;
     if (!confirm(`Delete ${kind}:\n"${name}"?\nThis cannot be undone.`)) return;
-    deleteEntry(id);
+    // Delete by stable key (prefer code) to avoid numeric id collisions across types
+    const key = entryKey(entry);
+    deleteEntry(key);
   }
 
-  function deleteEntry(id) {
-    const entry = state.entries.find(e => e.id === id);
+  function deleteEntry(idOrKey) {
+    const targetKey = String(idOrKey);
+    const entry = state.entries.find(e => entryKey(e) === targetKey);
     if (!entry) return;
     const type = entry.type;
-
-    // Remove from state
-    state.entries = state.entries.filter(e => e.id !== id);
+    state.entries = state.entries.filter(e => entryKey(e) !== targetKey);
 
     // Recalculate numbering counters after deletion
     const types = ["chapter", "note", "reference"];
@@ -2100,8 +2041,10 @@ function saveUIPrefsDebounced() {
       // Save entries to individual files
       const projectRootDir = path.dirname(path.dirname(SAVE_FILE)); // Go up two levels from project.json to get root
       
-      // Handle new and updated entries
-          for (const entry of state.entries) {
+    // Handle new and updated entries
+    // Track files we write so we can remove orphan files left on disk
+    const writtenFilesByType = { chapters: new Set(), notes: new Set(), refs: new Set() };
+    for (const entry of state.entries) {
         const type = entry.type === 'chapter' ? 'chapters' : 
                     entry.type === 'note' ? 'notes' : 'refs';
                     
@@ -2160,7 +2103,10 @@ function saveUIPrefsDebounced() {
           else filename = `${Date.now()}-${Math.random().toString(36).slice(2,8)}.json`;
         }
 
-        // Build a sanitized per-item object using an explicit whitelist of allowed keys per type.
+  // Remember filename written for orphan-cleanup later
+  try { writtenFilesByType[type].add(filename); } catch (e) { /* best-effort */ }
+
+  // Build a sanitized per-item object using an explicit whitelist of allowed keys per type.
         // This prevents any project-level fields (name, saved_at, version, ui, entries, project)
         // from ever being written into individual entry files.
         function buildSanitizedRawForWrite(view) {
@@ -2238,6 +2184,30 @@ function saveUIPrefsDebounced() {
         fs.writeFileSync(entryFile, JSON.stringify(rawToWrite, null, 2), "utf8");
         // Log exact file written for debugging of save-back behavior
         try { dbg(`workspace:save — wrote ${type}/${filename} (code=${rawToWrite.code ?? 'n/a'} id=${rawToWrite.id ?? 'n/a'})`); } catch (e) { /* best-effort */ }
+      }
+
+      // Remove orphan files that are no longer represented in the in-memory state.
+      // Only remove .json files inside the per-type folders. This ensures deleted
+      // entries are removed from the actual project on save (not at delete-button time).
+      try {
+        for (const t of ['chapters', 'notes', 'refs']) {
+          const dir = path.join(projectRootDir, t);
+          if (!fs.existsSync(dir)) continue;
+          const files = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
+          for (const f of files) {
+            if (!writtenFilesByType[t].has(f)) {
+              const p = path.join(dir, f);
+              try {
+                fs.unlinkSync(p);
+                dbg(`workspace:save — removed orphan file ${t}/${f}`);
+              } catch (err) {
+                dbg(`workspace:save — failed to remove orphan file ${t}/${f}: ${err?.message || err}`);
+              }
+            }
+          }
+        }
+      } catch (e) {
+        dbg(`workspace:save — orphan cleanup failed: ${e?.message || e}`);
       }
       
       // Update project.json without the change tracking arrays
@@ -3033,58 +3003,9 @@ el.wordGoal?.addEventListener("input", () => {
   }
 
   // DB sync function - downloads latest data from DB to project directory
-  async function syncFromDB() {
-    try {
-      // First check if sync is enabled
-      const syncEnabled = await ipcRenderer.invoke('sync:isEnabled')
-        .catch(() => false);
-      
-      if (!syncEnabled) {
-        dbg("DB sync skipped - sync is disabled");
-        return false;
-      }
-
-      const auth = await ipcRenderer.invoke("auth:get");
-      if (!auth?.ok || !auth.user) {
-        dbg("DB sync skipped - no user logged in");
-        return false;
-      }
-      
-      dbg("Starting DB sync...");
-      const syncResult = await ipcRenderer.invoke("db:syncFromDB");
-      if (!syncResult?.ok) {
-        throw new Error(syncResult?.error || "Unknown error during sync");
-      }
-
-      // After sync, refresh the project picker if it exists
-      if (picker) {
-        await refreshProjectList();
-        dbg("Refreshed project list after sync");
-      }
-
-      // If we have a current project loaded, reload it to get latest changes
-      if (state.currentProjectDir && state.workspacePath) {
-        try {
-          await appLoadFromDisk();
-          dbg("Reloaded current project after sync");
-        } catch (loadErr) {
-          dbg(`Warning: Could not reload current project: ${loadErr.message}`);
-        }
-      }
-
-      dbg(`DB sync successful - synced ${syncResult.projectCount} projects`);
-      return true;
-    } catch (err) {
-      dbg(`DB sync error: ${err?.message || err}`);
-      throw err; // Re-throw to handle in calling code
-    }
-  }
-  
-  // Legacy function kept for compatibility
-  async function loadRemoteSnapshotIntoState() {
-    dbg("remote: loadRemoteSnapshotIntoState redirected to syncFromDB");
-    await syncFromDB();
-  }
+  // DB->local sync and related legacy helpers removed from renderer.
+  // Functions previously here (syncFromDB, loadRemoteSnapshotIntoState) were intentionally deleted
+  // to ensure the UI cannot trigger any DB->local downloads. Keepers: local-only project flows.
 
 
   // ───────────────── Init ─────────────────

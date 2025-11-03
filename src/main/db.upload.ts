@@ -40,6 +40,81 @@ export async function countLocalProjects(rootDir: string): Promise<number> {
 }
 
 /**
+ * Retrieve all project IDs for the currently logged-in creator and persist
+ * that list into prefs under the key `last_full_upload_project_ids`.
+ *
+ * This does not perform any DB->local writes; it simply records which
+ * project ids exist for the logged-in creator at the time of the call.
+ *
+ * @param options.persist - whether to persist the id list to prefs (default: true)
+ */
+export async function fullUpload(options?: { persist?: boolean }): Promise<{ ok: boolean; ids?: string[]; error?: string }> {
+  const persist = options?.persist ?? true;
+  appendDebugLog(`db.upload:fullUpload called (persist=${persist})`);
+
+  try {
+    // Read logged-in user from prefs (same approach as IPC handlers)
+    const p = await pool.query(`SELECT value AS user FROM prefs WHERE key = 'auth_user' LIMIT 1;`);
+    const u = p.rows?.[0]?.user || null;
+    const creatorId = u?.id ?? null;
+    if (!creatorId) {
+      appendDebugLog('db.upload:fullUpload — no logged-in user found in prefs');
+      return { ok: false, error: 'No logged in user' };
+    }
+
+    // Use query helper to collect project ids for this creator
+    const ids = await getProjectIdsForCreator(String(creatorId));
+    appendDebugLog(`db.upload:fullUpload — fetched ${ids.length} project ids for creator ${creatorId}`);
+
+    if (persist) {
+      try {
+        const payload = JSON.stringify({ ids, ts: new Date().toISOString() });
+        await pool.query(
+          `INSERT INTO prefs(key, value) VALUES ('last_full_upload_project_ids', $1::jsonb)
+             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();`,
+          [payload]
+        );
+        appendDebugLog('db.upload:fullUpload — persisted project ids to prefs:last_full_upload_project_ids');
+      } catch (err) {
+        appendDebugLog(`db.upload:fullUpload — failed to persist ids to prefs: ${(err as Error).message}`);
+        // Not fatal — return ok with ids but include warning
+        return { ok: true, ids };
+      }
+    }
+
+    return { ok: true, ids };
+  } catch (err) {
+    appendDebugLog(`db.upload:fullUpload — error: ${(err as Error).message}`);
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Retrieve full assembled payloads for every project belonging to the
+ * currently logged-in creator. This uses the `getProjectIdsForCreator`
+ * helper then loops the returned project id strings, calling
+ * `getProjectInfo` and `getProjectEntries` for each id. No disk writes are
+ * performed; the assembled payloads are returned to the caller.
+ *
+ * @param options.persist - whether to persist the id list to prefs (keeps parity with fullUpload)
+ * @param options.assemble - whether to build per-project payloads (default: true)
+ */
+// NOTE: DB->local load helpers (previously here) were moved to src/main/db.load.ts
+
+/**
+ * Assemble payloads for the logged-in creator and write them to a
+ * temporary JSON file. By default this writes `temporary.json` to the
+ * current working directory (process.cwd()).
+ *
+ * NOTE: assumption — writing to the project root (process.cwd()) is the
+ * user's desired "temporary.json" location. If you prefer an OS-specific
+ * temp directory, pass `outPath` explicitly.
+ *
+ * @param outPath - optional absolute path to write the JSON file. If omitted, uses process.cwd()/temporary.json
+ */
+// NOTE: DB->local write helper moved to `db.load.ts` to keep load logic centralized.
+
+/**
  * Base uploader function (stub).
  * This is the minimal placeholder for the upload flow. It intentionally
  * performs no DB writes and returns a neutral result. It exists so callers

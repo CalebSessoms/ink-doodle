@@ -1,0 +1,71 @@
+{
+  "ids": [
+    "PRJ-0001-000001"
+  ],
+  "payloads": [
+    {
+      "id": "PRJ-0001-000001",
+      "project": {
+        "id": "PRJ-0001-000001",
+        "title": "deletesAll",
+        "creator_id": 1,
+        "created_at": "2025-11-01T06:22:02.895Z",
+        "updated_at": "2025-11-03T14:06:03.981Z",
+        "code": 1
+      },
+      "entries": {
+        "chapters": [
+          {
+            "id": "CHP-0001-000001",
+            "code": 1,
+            "project_id": "PRJ-0001-000001",
+            "creator_id": 1,
+            "number": null,
+            "title": "Chapter 1",
+            "content": "",
+            "status": "Draft",
+            "summary": "",
+            "tags": [],
+            "created_at": "2025-11-01T07:52:27.018Z",
+            "updated_at": "2025-11-01T08:41:57.559Z",
+            "word_goal": 0
+          }
+        ],
+        "notes": [
+          {
+            "id": "NT-0001-000001",
+            "code": 1,
+            "project_id": "PRJ-0001-000001",
+            "creator_id": 1,
+            "number": null,
+            "title": "Note 1",
+            "content": null,
+            "tags": [],
+            "category": "Misc",
+            "pinned": false,
+            "created_at": "2025-11-01T07:56:43.336Z",
+            "updated_at": "2025-11-03T14:06:04.037Z"
+          }
+        ],
+        "refs": [
+          {
+            "id": "RF-0001-000001",
+            "code": 1,
+            "project_id": "PRJ-0001-000001",
+            "creator_id": 1,
+            "number": null,
+            "title": "Reference 1",
+            "tags": [],
+            "reference_type": "Glossary",
+            "summary": "",
+            "source_link": "",
+            "content": "",
+            "created_at": "2025-11-01T07:56:43.336Z",
+            "updated_at": "2025-11-01T08:41:57.653Z"
+          }
+        ]
+      }
+    }
+  ],
+  "ts": "2025-11-03T08:02:07.320Z"
+}

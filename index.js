@@ -510,7 +510,25 @@ ipcMain.handle("project:saveBack", async () => {
     } catch (e) {}
     appendDebugLog(`project:saveBack — Manual save-back starting for project "${curName}" at ${currentProjectDir}`);
     ensureDir(currentProjectDir);
+    // Copy workspace -> project (overwrite existing files)
     copyDirSync(ws, currentProjectDir);
+    // Debug: enumerate workspace and project files to detect stale files
+    try {
+      const srcFiles = listFilesRecursive(ws, 10000) || [];
+      const destFiles = listFilesRecursive(currentProjectDir, 10000) || [];
+      const srcSet = new Set(srcFiles.map(s => s.replace(/\\/g, '/')));
+      const stale = destFiles.filter(f => !srcSet.has(f.replace(/\\/g, '/')));
+      for (const rel of stale) {
+        const destPath = path.join(currentProjectDir, rel);
+        try {
+          fs.rmSync(destPath, { force: true });
+        } catch (e) {
+          appendDebugLog(`project:saveBack — failed removing stale file ${rel}: ${e?.message || e}`, currentProjectDir);
+        }
+      }
+    } catch (e) {
+      appendDebugLog(`project:saveBack — mirror cleanup failed: ${e?.message || e}`, currentProjectDir);
+    }
     try {
       const files = listFilesRecursive(ws, 500);
       appendDebugLog(`project:saveBack — Manual save-back completed for project "${curName}" → ${currentProjectDir} (files saved: ${files.length})`, currentProjectDir);
@@ -533,27 +551,11 @@ app.whenReady().then(async () => {
     appendDebugLog('=== NEW SESSION ===');
     appendDebugLog(`paths: workspace=${WORKSPACE_DIR()} projects=${PROJECTS_ROOT()} global=${getGlobalLogPath()}`);
 
-    // Check if user is logged in and sync DB if they are
-    const pool = require('./src/main/db').pool;
-    const auth = await pool.query(
-      `SELECT value->>'id' AS creator_id 
-       FROM prefs 
-       WHERE key = 'auth_user' 
-       LIMIT 1;`
-    );
-    const creatorId = Number(auth.rows?.[0]?.creator_id);
-    if (creatorId && global.DB_SYNC_ENABLED) {
-      appendDebugLog('Found logged in user on startup - syncing from DB');
-      const { syncFromDB } = require('./src/main/db.sync');
-      const result = await syncFromDB(creatorId);
-      if (result.ok) {
-        appendDebugLog(`DB sync successful - synced ${result.projectCount} projects`);
-      } else {
-        appendDebugLog(`DB sync failed: ${result.error}`);
-      }
-    } else if (creatorId) {
-      appendDebugLog('DB sync disabled - skipping sync on startup');
-    }
+    // Startup automatic DB->local sync has been removed to keep local JSON
+    // authoritative. If a controlled import is required, implement it in
+    // `src/main/db.load.ts` behind a developer flag. We intentionally do not
+    // call any startup DB->local sync helper here.
+    appendDebugLog('startupLoginSync — disabled: automatic DB->local sync removed');
   } catch (e) { /* best-effort */ }
   createWindow();
   buildMenu();

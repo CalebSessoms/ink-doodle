@@ -418,3 +418,140 @@ export function getProjectColumns() {
 export function getCreatorColumns() {
   return CREATORS;
 }
+
+/**
+ * translateDbToLocal
+ * Convert a DB payload (project row + arrays of chapters/notes/refs) into
+ * the local on-disk structure used by InkDoodleProjects. This should create
+ * the `project` object and per-entry JSON objects suitable for writing to
+ * the per-project `data/project.json` and files under `chapters/`,
+ * `notes/`, and `refs/`.
+ *
+ * NOTE: This is a stub placeholder. Implementing this requires mapping DB
+ * column names back into the local JSON shapes (reverse of
+ * `collectProjectData`). For now the function returns a not-implemented
+ * result so callers can be wired without throwing.
+ */
+export async function translateDbToLocal(dbPayloadOrPath?: any, options?: { baseDir?: string }): Promise<{ ok: boolean; projects?: Array<{ id?: any; project: any; entries: { chapters: any[]; notes: any[]; refs: any[] } }>; error?: string }> {
+  // If dbPayloadOrPath is a string path or omitted, read the temporary
+  // JSON file from disk (defaults to process.cwd()/temporary.json).
+  // Otherwise treat dbPayloadOrPath as an already-parsed payload object
+  // that may be { ids, payloads } or a single payload.
+  try {
+    let root: any = null;
+    if (typeof dbPayloadOrPath === 'string' || typeof dbPayloadOrPath === 'undefined') {
+      const fp = typeof dbPayloadOrPath === 'string' ? dbPayloadOrPath : path.join(process.cwd(), 'temporary.json');
+      const txt = await fs.readFile(fp, 'utf8');
+      root = JSON.parse(txt);
+    } else {
+      root = dbPayloadOrPath;
+    }
+
+    // Normalize payloads array
+    let payloads: any[] = [];
+    if (!root) return { ok: false, error: 'empty temporary payload' };
+    if (Array.isArray(root)) payloads = root;
+    else if (Array.isArray(root.payloads)) payloads = root.payloads;
+    else if (root.payload) payloads = [root.payload];
+    else if (root.project || root.entries) payloads = [root];
+    else return { ok: false, error: 'unrecognized temporary.json structure' };
+
+    const outProjects: Array<{ id?: any; project: any; entries: { chapters: any[]; notes: any[]; refs: any[] } }> = [];
+
+    for (const p of payloads) {
+      const dbProject = p.project || {};
+      const dbEntries = p.entries || { chapters: [], notes: [], refs: [] };
+
+      // For local format invert id/code: local.id <- db.code, local.code <- db.id
+      const localProjectId = (() => {
+        const val = dbProject.code ?? null; // numeric local id stored in DB as `code`
+        const num = Number(val);
+        return Number.isFinite(num) ? num : (val ?? null);
+      })();
+
+      const localProject = {
+        id: localProjectId,
+        code: dbProject.id ?? null,
+        title: dbProject.title ?? null,
+        creator_id: dbProject.creator_id ?? null,
+        created_at: dbProject.created_at ?? null,
+        updated_at: dbProject.updated_at ?? null
+      };
+
+      const chaptersIn = Array.isArray(dbEntries.chapters) ? dbEntries.chapters : [];
+      const notesIn = Array.isArray(dbEntries.notes) ? dbEntries.notes : [];
+      const refsIn = Array.isArray(dbEntries.refs) ? dbEntries.refs : [];
+
+      const chaptersOut: any[] = chaptersIn.map((c: any) => {
+        const localId = (() => {
+          const num = Number(c.code ?? null);
+          return Number.isFinite(num) ? num : (c.code ?? null);
+        })();
+        return {
+          id: localId,
+          code: c.id ?? null,
+          project_id: localProjectId,
+          creator_id: c.creator_id ?? null,
+          number: c.number ?? null,
+          title: c.title ?? null,
+          content: c.content ?? '',
+          status: c.status ?? null,
+          summary: c.summary ?? null,
+          tags: Array.isArray(c.tags) ? c.tags : [],
+          created_at: c.created_at ?? null,
+          updated_at: c.updated_at ?? null,
+          word_goal: c.word_goal ?? null
+        };
+      });
+
+      const notesOut: any[] = notesIn.map((n: any) => {
+        const localId = (() => {
+          const num = Number(n.code ?? null);
+          return Number.isFinite(num) ? num : (n.code ?? null);
+        })();
+        return {
+          id: localId,
+          code: n.id ?? null,
+          project_id: localProjectId,
+          creator_id: n.creator_id ?? null,
+          number: n.number ?? null,
+          title: n.title ?? null,
+          content: n.content ?? '',
+          tags: Array.isArray(n.tags) ? n.tags : [],
+          category: n.category ?? null,
+          pinned: n.pinned ?? false,
+          created_at: n.created_at ?? null,
+          updated_at: n.updated_at ?? null
+        };
+      });
+
+      const refsOut: any[] = refsIn.map((r: any) => {
+        const localId = (() => {
+          const num = Number(r.code ?? null);
+          return Number.isFinite(num) ? num : (r.code ?? null);
+        })();
+        return {
+          id: localId,
+          code: r.id ?? null,
+          project_id: localProjectId,
+          creator_id: r.creator_id ?? null,
+          number: r.number ?? null,
+          title: r.title ?? null,
+          tags: Array.isArray(r.tags) ? r.tags : [],
+          reference_type: r.reference_type ?? null,
+          summary: r.summary ?? null,
+          source_link: r.source_link ?? null,
+          content: r.content ?? '',
+          created_at: r.created_at ?? null,
+          updated_at: r.updated_at ?? null
+        };
+      });
+
+      outProjects.push({ id: localProjectId, project: localProject, entries: { chapters: chaptersOut, notes: notesOut, refs: refsOut } });
+    }
+
+    return { ok: true, projects: outProjects };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
