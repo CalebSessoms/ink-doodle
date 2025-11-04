@@ -31,9 +31,17 @@
         </div>
 
         <div class="tabs" role="tablist" aria-label="Entry Types">
-          <button class="tab active" data-tab="chapters" role="tab" aria-selected="true" aria-controls="entry-list">Chapters</button>
-          <button class="tab" data-tab="notes" role="tab" aria-selected="false" aria-controls="entry-list">Notes</button>
-          <button class="tab" data-tab="references" role="tab" aria-selected="false" aria-controls="entry-list">References</button>
+          <div class="tabs-writing">
+            <button class="tab active" data-tab="chapters" role="tab" aria-selected="true" aria-controls="entry-list">Chapters</button>
+            <button class="tab" data-tab="notes" role="tab" aria-selected="false" aria-controls="entry-list">Notes</button>
+            <button class="tab" data-tab="references" role="tab" aria-selected="false" aria-controls="entry-list">References</button>
+          </div>
+          <div class="tabs-lore hidden" aria-hidden="true">
+            <button class="tab lore-subtab active" data-lore="characters" type="button">Characters</button>
+            <button class="tab lore-subtab" data-lore="locations" type="button">Locations</button>
+            <button class="tab lore-subtab" data-lore="timelines" type="button">Timelines</button>
+            <button class="tab lore-subtab" data-lore="items" type="button">Items</button>
+          </div>
         </div>
 
         <ul class="entry-list" id="entry-list" aria-label="Entries"></ul>
@@ -56,6 +64,7 @@
                     aria-label="Title"
                 />
                 <button class="btn danger" id="editor-delete-btn" type="button" title="Delete entry">🗑 Delete</button>
+        <button class="btn" id="switch-to-lore-btn" type="button" title="Switch to Lore Editor">🧭 Lore</button>
             </div>
 
             <div class="meta-row">
@@ -135,6 +144,19 @@
           </div>
           <div class="right" id="save-state">Unsaved • Ctrl+S</div>
         </div>
+      </section>
+
+      <!-- Lore Editor Pane (UI-only placeholder) -->
+      <section class="lore-editor hidden" id="lore-editor" aria-label="Lore Editor">
+        <div class="lore-header" style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
+          <div style="font-weight:700;">Lore Editor</div>
+          <div>
+            <button class="btn" id="lore-back-btn" type="button">← Back to Story Editor</button>
+          </div>
+        </div>
+
+        <label class="section-label" for="lore-body">Notes / Worldbuilding</label>
+        <textarea id="lore-body" class="body" placeholder="Write lore, characters, locations, timelines..." aria-label="Lore body"></textarea>
       </section>
     </main>
   </div>

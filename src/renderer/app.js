@@ -96,6 +96,19 @@ async function _wireDebugLogPathEarly() {
     dbg("require(fs,path,ipcRenderer) OK");
   }
 
+  // Listen for background fullLoad completion from main and refresh project list
+  try {
+    if (ipcRenderer && ipcRenderer.on) {
+      ipcRenderer.on('auth:fullLoadDone', (_evt, payload) => {
+        try {
+          dbg('auth:fullLoadDone received — refreshing project list');
+          // refreshProjectList is declared later; call it (function declarations are hoisted)
+          try { refreshProjectList(); } catch (e) { dbg(`refreshProjectList failed: ${e?.message || e}`); }
+        } catch (e) { /* best-effort */ }
+      });
+    }
+  } catch (e) { /* best-effort */ }
+
   // ───────────────── Global/State ─────────────────
   const state = {
     projectName: "Untitled Project",
@@ -131,6 +144,8 @@ async function _wireDebugLogPathEarly() {
       bgBlur: 2,           // px (0..8)
       editorDim: false,    // dim editor panel for readability
     },
+    // Lore UI
+    loreSubtab: 'characters', // 'characters' | 'locations' | 'timelines' | 'items'
   };
 
   // Will be set after we know workspacePath:
@@ -554,7 +569,8 @@ async function _wireDebugLogPathEarly() {
     projectName: $("#project-name"),
     entryList: $("#entry-list"),
     empty: $("#empty-state"),
-    tabs: $$(".tab"),
+  // Only the main writing tabs (chapters/notes/references). Lore subtabs are wired separately.
+  tabs: document.querySelectorAll('.tabs-writing .tab'),
     newBtn: $("#new-btn"),
     quickCreate: $$("#empty-state [data-new]"),
     // Editor fields
@@ -609,7 +625,37 @@ async function _wireDebugLogPathEarly() {
     // Buttons inside modal
     settingsDone: $("#settings-done"),
     settingsReset: $("#settings-reset"),
+    // Lore editor UI
+    loreEditor: $("#lore-editor"),
+    loreSwitchBtn: $("#switch-to-lore-btn"),
+    loreBackBtn: $("#lore-back-btn"),
+    loreBody: $("#lore-body"),
+    tabsWriting: document.querySelector('.tabs-writing'),
+    tabsLore: document.querySelector('.tabs-lore'),
+    loreSubtabs: document.querySelectorAll('.tabs-lore .lore-subtab'),
   };
+
+  // Top-level document capture handler as a safety net: handle clicks on
+  // writing tabs even if other binding steps fail or run too late. This is
+  // deliberately installed early and guarded to avoid double-install.
+  try {
+    if (!state._docTabHandlerInstalled) {
+      document.addEventListener('click', (e) => {
+        try {
+          const btn = e.target && e.target.closest ? e.target.closest('.tabs-writing .tab[data-tab]') : null;
+          if (!btn) return;
+          const t = btn.dataset.tab;
+          dbg(`docTopLevelTabHandler click -> tab=${t}`);
+          if (!t) return;
+          if (t === state.activeTab) { dbg(`docTopLevelTabHandler -> already active ${t}`); return; }
+          // call switchTab if available
+          try { if (typeof switchTab === 'function') switchTab(t); else dbg('docTopLevelTabHandler: switchTab not defined yet'); } catch (er) { dbg('docTopLevelTabHandler error: ' + (er && er.message)); }
+        } catch (err) { dbg('docTopLevelTabHandler outer error: ' + (err && err.message)); }
+      }, true);
+      state._docTabHandlerInstalled = true;
+      dbg('docTopLevelTabHandler installed');
+    }
+  } catch (e) { dbg('Failed to install docTopLevelTabHandler: ' + (e && e.message)); }
 
   // ───────────────── Utilities ─────────────────
   const nowISO = () => new Date().toISOString();
@@ -617,6 +663,9 @@ async function _wireDebugLogPathEarly() {
   const capFirst = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
   const tabTypeMap = { chapters: "chapter", notes: "note", references: "reference" };
   const typeTabMap = { chapter: "chapters", note: "notes", reference: "references" };
+
+  // Map lore subtabs -> entry types (future entries should use these types)
+  const loreTypeMap = { characters: 'character', locations: 'location', timelines: 'timeline', items: 'item' };
 
   // Map DB rows → renderer entries (read-only)
   function mapDbChapters(rows) {
@@ -659,8 +708,17 @@ async function _wireDebugLogPathEarly() {
   }
 
   function visibleEntries() {
+    dbg(`visibleEntries -> activeTab=${state.activeTab} loreSubtab=${state.loreSubtab}`);
+    if (state.activeTab === 'lore') {
+      const loreType = loreTypeMap[state.loreSubtab] || 'character';
+      const list = state.entries.filter(e => e.type === loreType).sort((a,b)=>a.order_index - b.order_index);
+      dbg(`visibleEntries -> filtering lore type=${loreType} matched=${list.length}`);
+      return list;
+    }
     const t = tabTypeMap[state.activeTab];
-    return state.entries.filter(e => e.type === t).sort((a,b)=>a.order_index - b.order_index);
+    const list = state.entries.filter(e => e.type === t).sort((a,b)=>a.order_index - b.order_index);
+    dbg(`visibleEntries -> filtering story type=${t} matched=${list.length}`);
+    return list;
   }
 
   function metaText(e) {
@@ -1617,7 +1675,7 @@ function saveUIPrefsDebounced() {
     state.projectName = (el.projectName?.textContent || "").trim() || "Untitled Project";
     if (el.titleInput) el.titleInput.value = entry.title || "";
 
-    if (entry.type === "chapter") {
+  if (entry.type === "chapter") {
     show(el.statusWrapper); show(el.tagsWrapper); show(el.synopsisLabel); show(el.synopsis);
     hide(el.noteCategoryWrapper); hide(el.notePinWrapper);
     hide(el.referenceTypeWrapper); hide(el.sourceLinkLabel); hide(el.sourceLink);
@@ -1625,13 +1683,18 @@ function saveUIPrefsDebounced() {
     if (el.status) { el.status.disabled = false; el.status.value = entry.status || "Draft"; }
     if (el.tags) el.tags.value = (entry.tags || []).join(", ");
     if (el.synopsis) el.synopsis.value = entry.synopsis || "";
+    try {
+      const s = entry.synopsis ?? null;
+      const sample = s !== null && s !== undefined ? String(s).slice(0,200) : null;
+      dbg(`renderer: populateEditor chapter id=${entry.id ?? 'n/a'} synopsisPresent=${sample!==null} synopsisLen=${s ? String(s).length : 0} sample=${sample||'<null>'}`);
+    } catch (e) { /* best-effort */ }
     if (el.body) el.body.value = entry.body || "";
 
     // word goal UI (chapters only)
     if (el.goalWrap) el.goalWrap.style.display = "";
     if (el.goalProgress) el.goalProgress.style.display = "flex";
     if (el.wordGoal) el.wordGoal.value = entry.word_goal ?? "";
-    } else if (entry.type === "note") {
+  } else if (entry.type === "note") {
     // hide goal UI for notes
       if (el.goalWrap) el.goalWrap.style.display = "none";
       if (el.goalProgress) el.goalProgress.style.display = "none";
@@ -1642,7 +1705,7 @@ function saveUIPrefsDebounced() {
       if (el.noteCategory) el.noteCategory.value = entry.category || "Misc";
       if (el.notePin) el.notePin.checked = !!entry.pinned;
       if (el.body) el.body.value = entry.body || "";
-    } else if (entry.type === "reference") {
+  } else if (entry.type === "reference") {
       hide(el.statusWrapper); show(el.tagsWrapper); show(el.synopsisLabel); show(el.synopsis);
       hide(el.wordTargetWrapper);
       show(el.referenceTypeWrapper); show(el.sourceLinkLabel); show(el.sourceLink);
@@ -1651,8 +1714,25 @@ function saveUIPrefsDebounced() {
       if (el.tags) el.tags.value = (entry.tags || []).join(", ");
       if (el.referenceType) el.referenceType.value = entry.reference_type || "Glossary";
       if (el.synopsis) el.synopsis.value = entry.summary || entry.synopsis || "";
+      try {
+        const s = entry.summary ?? entry.synopsis ?? null;
+        const sample = s !== null && s !== undefined ? String(s).slice(0,200) : null;
+        dbg(`renderer: populateEditor reference id=${entry.id ?? 'n/a'} summaryPresent=${sample!==null} summaryLen=${s ? String(s).length : 0} sample=${sample||'<null>'}`);
+      } catch (e) { /* best-effort */ }
       if (el.sourceLink) el.sourceLink.value = entry.source_link || "";
       if (el.body) el.body.value = entry.body || "";
+    }
+    else if (['character','location','timeline','item'].includes(entry.type)) {
+      // Lore entries: use tags + body, hide chapter-only controls
+      hide(el.statusWrapper); show(el.tagsWrapper); hide(el.synopsisLabel); hide(el.synopsis);
+      hide(el.noteCategoryWrapper); hide(el.notePinWrapper);
+      hide(el.referenceTypeWrapper); hide(el.sourceLinkLabel); hide(el.sourceLink);
+      if (el.tags) el.tags.value = (entry.tags || []).join(', ');
+      if (el.body) el.body.value = entry.body || '';
+      if (el.titleInput) el.titleInput.value = entry.title || '';
+      // No word goals
+      if (el.goalWrap) el.goalWrap.style.display = 'none';
+      if (el.goalProgress) el.goalProgress.style.display = 'none';
     }
 
     el.saveState && (el.saveState.textContent = "Autosaved");
@@ -1672,7 +1752,9 @@ function saveUIPrefsDebounced() {
     const projectId = Number(state.project?.id || state.project?.project_id) || 0;
     const pad = (n) => String(n).padStart(6, '0');
     const parentPad = String(projectId).padStart(4, '0');
-    const typeCode = type === 'chapter' ? 'CHP' : type === 'note' ? 'NT' : 'RF';
+  const typeCode = type === 'chapter' ? 'CHP' : type === 'note' ? 'NT' : type === 'reference' ? 'RF' :
+           type === 'character' ? 'CHR' : type === 'location' ? 'LOC' : type === 'timeline' ? 'TML' :
+           type === 'item' ? 'ITM' : 'RF';
 
     // Use numeric id (sequence) and full code matching main process format
     const seq = (() => {
@@ -1717,12 +1799,17 @@ function saveUIPrefsDebounced() {
       entry.category = "Misc";
       entry.pinned = false;
       dbg(`note:create — Creating new note "${entry.title}" with ID ${entry.id}`);
-    }
-    else { 
+    } else if (type === 'reference') {
       entry.reference_type = "Glossary";
       entry.summary = "";
       entry.source_link = "";
       dbg(`reference:create — Creating new reference "${entry.title}" with ID ${entry.id}`);
+    } else if (['character','location','timeline','item'].includes(type)) {
+      // Lore types: basic fields
+      entry.summary = "";
+      entry.body = "";
+      entry.tags = [];
+      dbg(`lore:create — Creating new ${type} "${entry.title}" with ID ${entry.id}`);
     }
 
   // Add to state.entries with proper project code if available
@@ -1761,14 +1848,108 @@ function saveUIPrefsDebounced() {
 
   // ───────────────── Tabs ─────────────────
   function switchTab(tabName) {
+    dbg(`switchTab -> requested: ${tabName} (current=${state.activeTab})`);
+    const prevActive = state.activeTab;
     state.activeTab = tabName;
-    el.tabs?.forEach(t => {
+    // Update main tabs (writing tabs present in DOM)
+    document.querySelectorAll('.tabs .tab[data-tab]').forEach(t => {
       const active = t.dataset.tab === tabName;
-      t.classList.toggle("active", active);
-      t.setAttribute("aria-selected", active ? "true" : "false");
+      t.classList.toggle('active', active);
+      t.setAttribute('aria-selected', active ? 'true' : 'false');
     });
+
+    // If switching to lore, show lore subtabs; otherwise show writing tabs
+    if (tabName === 'lore') {
+      if (el.tabsWriting) el.tabsWriting.classList.add('hidden');
+      if (el.tabsLore) { el.tabsLore.classList.remove('hidden'); el.tabsLore.setAttribute('aria-hidden','false'); }
+      // ensure a lore subtab is marked active
+      el.loreSubtabs?.forEach(btn => {
+        const active = btn.dataset.lore === state.loreSubtab;
+        btn.classList.toggle('active', active);
+      });
+    } else {
+      if (el.tabsWriting) el.tabsWriting.classList.remove('hidden');
+      if (el.tabsLore) { el.tabsLore.classList.add('hidden'); el.tabsLore.setAttribute('aria-hidden','true'); }
+    }
+
+    // Keep editor pane in sync with the selected tab: show Lore editor when
+    // the Lore tab is active, otherwise show the main Story editor.
+    try {
+      // Only toggle editor panes when entering/exiting Lore mode.
+      // Avoid calling switchToStory when switching between story tabs
+      // (chapters/notes/references) because that can overwrite the
+      // requested tab via state.prevActiveTab.
+      if (tabName === 'lore') {
+        switchToLore();
+      } else if (prevActive === 'lore') {
+        // We are coming out of Lore into a story tab — restore story UI.
+        switchToStory();
+      } else {
+        // Switching between story tabs only — ensure writing tabs visible
+        if (el.tabsWriting) el.tabsWriting.classList.remove('hidden');
+        if (el.tabsLore) { el.tabsLore.classList.add('hidden'); el.tabsLore.setAttribute('aria-hidden','true'); }
+      }
+    } catch (e) { dbg(`switchTab -> editor sync failed: ${e?.message || e}`); }
+
+  renderList();
+  dbg(`switched tab -> ${tabName}; tabsWriting=${!!el.tabsWriting} tabsLore=${!!el.tabsLore} loreSubtab=${state.loreSubtab}`);
+  }
+
+  function switchLoreSubtab(name) {
+    if (!name) return;
+    state.loreSubtab = name;
+    // update subtab active styles
+    el.loreSubtabs?.forEach(btn => btn.classList.toggle('active', btn.dataset.lore === name));
+    dbg(`switched lore subtab -> ${name}`);
     renderList();
-    dbg(`switched tab -> ${tabName}`);
+  }
+
+  // ───────────────── Lore Editor toggles ─────────────────
+  function switchToLore() {
+    dbg('UI: switching to Lore editor');
+    // Remember previous active tab so we can restore it when returning
+    try {
+      if (state.activeTab !== 'lore') state.prevActiveTab = state.activeTab;
+    } catch (e) {}
+
+    const editor = document.querySelector('.editor');
+    if (editor) editor.classList.add('hidden');
+    if (el.loreEditor) el.loreEditor.classList.remove('hidden');
+    // ensure the sidebar reflects lore subtabs (do not change activeTab here)
+    if (el.tabsWriting) el.tabsWriting.classList.add('hidden');
+    if (el.tabsLore) { el.tabsLore.classList.remove('hidden'); el.tabsLore.setAttribute('aria-hidden','false'); }
+
+    // put focus into lore textarea
+    setTimeout(() => { try { el.loreBody && el.loreBody.focus(); } catch (e) {} }, 40);
+  }
+
+  function switchToStory() {
+    dbg('UI: switching back to Story editor');
+    // Restore the previous active tab if we saved one, otherwise default to chapters
+    const restore = state.prevActiveTab || 'chapters';
+    state.activeTab = restore;
+
+    // Update the tab button active states
+    document.querySelectorAll('.tabs .tab[data-tab]').forEach(t => {
+      const active = t.dataset.tab === state.activeTab;
+      t.classList.toggle('active', active);
+      t.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+
+    // Swap sidebar groups back to writing tabs
+    if (el.tabsWriting) el.tabsWriting.classList.remove('hidden');
+    if (el.tabsLore) { el.tabsLore.classList.add('hidden'); el.tabsLore.setAttribute('aria-hidden','true'); }
+
+    // Show main editor and hide lore editor
+    const editor = document.querySelector('.editor');
+    if (editor) editor.classList.remove('hidden');
+    if (el.loreEditor) el.loreEditor.classList.add('hidden');
+
+    // clear the remembered previous tab
+    try { state.prevActiveTab = null; } catch (e) {}
+
+    // restore editor focus
+    setTimeout(() => { try { el.titleInput && el.titleInput.focus(); } catch (e) {} }, 40);
   }
 
   // ───────────────── Word Count ─────────────────
@@ -2012,10 +2193,12 @@ function saveUIPrefsDebounced() {
       // Update changes tracking for new items
       const changes = getOrCreateChanges();
       
-      // Process each type of entry
-      state.entries.forEach(entry => {
-        const type = entry.type === 'chapter' ? 'chapters' : 
-                    entry.type === 'note' ? 'notes' : 'refs';
+    // Process each type of entry
+    state.entries.forEach(entry => {
+      const type = entry.type === 'chapter' ? 'chapters' : 
+            entry.type === 'note' ? 'notes' : 
+            entry.type === 'reference' ? 'refs' :
+            (['character','location','timeline','item'].includes(entry.type) ? 'lore' : 'refs');
                     
         // Track the project code if it exists
         if (data.project && data.project.code) {
@@ -2311,7 +2494,7 @@ function saveUIPrefsDebounced() {
         
         // Load entries from individual files
         const projectRootDir = path.dirname(path.dirname(SAVE_FILE)); // Go up two levels from project.json to get root
-  const entryTypes = ['chapters', 'notes', 'refs'];
+  const entryTypes = ['chapters', 'notes', 'refs', 'lore'];
   const entries = [];
   // per-type counters for debug reporting
   const loadStats = { chapters: 0, notes: 0, refs: 0 };
@@ -2348,9 +2531,32 @@ function saveUIPrefsDebounced() {
                   __filepath: entryPath,
                 };
 
+                // Promote summary/synopsis from raw into the top-level view so the
+                // renderer/editor can read it directly. Preserve raw on __raw.
+                try {
+                  if (view.type === 'chapter') {
+                    // chapters use 'synopsis' in the UI, but some files may use 'summary'
+                    view.synopsis = (raw && (raw.synopsis !== undefined ? raw.synopsis : (raw.summary !== undefined ? raw.summary : '')));
+                  } else if (view.type === 'reference') {
+                    // references use 'summary' in the UI
+                    view.summary = (raw && (raw.summary !== undefined ? raw.summary : (raw.synopsis !== undefined ? raw.synopsis : '')));
+                  } else {
+                    // notes generally do not use summary/synopsis in the editor, but promote if present
+                    view.synopsis = (raw && (raw.synopsis !== undefined ? raw.synopsis : (raw.summary !== undefined ? raw.summary : undefined))); 
+                  }
+                } catch (e) { /* best-effort */ }
+
                 entries.push(view);
                 loadStats[type] = (loadStats[type] || 0) + 1;
                 dbg(`workspace:load — read ${type}/${file} (id=${view.id ?? 'n/a'} code=${view.code ?? 'n/a'})`);
+                // Debug: report whether a summary/synopsis was present in the raw file
+                try {
+                  const rawSummaryVal = (raw && (raw.summary !== undefined ? raw.summary : (raw.synopsis !== undefined ? raw.synopsis : null)));
+                  const rawSummarySample = rawSummaryVal !== null && rawSummaryVal !== undefined ? String(rawSummaryVal).slice(0,200) : null;
+                  const viewSummaryVal = (view && (view.summary !== undefined ? view.summary : (view.synopsis !== undefined ? view.synopsis : null)));
+                  const viewSummarySample = viewSummaryVal !== null && viewSummaryVal !== undefined ? String(viewSummaryVal).slice(0,200) : null;
+                  dbg(`workspace:load — summaryCheck ${type}/${file} rawPresent=${rawSummarySample!==null} viewPresent=${viewSummarySample!==null} rawSample=${rawSummarySample||'<null>'} viewSample=${viewSummarySample||'<null>'}`);
+                } catch (e) { /* best-effort debug */ }
               } catch (entryError) {
                 dbg(`Warning: Failed to load entry file ${file}: ${entryError.message}`);
               }
@@ -2558,14 +2764,16 @@ function saveUIPrefsDebounced() {
       }
       
       dbg("Saving workspace back to project directory...");
-      const r = await ipcRenderer.invoke("project:save-back", {
-        workspaceFile: SAVE_FILE
+      // Use the same IPC channel and parameters as other save-back callers
+      const r = await ipcRenderer.invoke("project:saveBack", {
+        workspacePath: state.workspacePath,
+        projectDir: state.currentProjectDir
       }).catch(e => ({ ok: false, error: String(e) }));
-      
+
       if (!r?.ok) {
         throw new Error(r?.error || "Failed to save back to project");
       }
-      
+
       dbg("Successfully saved workspace back to project directory");
     } catch (err) {
       console.error(err);
@@ -2690,7 +2898,10 @@ el.wordGoal?.addEventListener("input", () => {
 
   // Sidebar
   el.newBtn?.addEventListener("click", () => {
-    const kind = tabTypeMap[state.activeTab];
+    let kind = null;
+    if (state.activeTab === 'lore') kind = loreTypeMap[state.loreSubtab] || 'character';
+    else kind = tabTypeMap[state.activeTab];
+    if (!kind) kind = 'chapter';
     createEntry(kind);
   });
 
@@ -2702,9 +2913,41 @@ el.wordGoal?.addEventListener("input", () => {
     });
   });
 
-  // Tabs
-  el.tabs?.forEach(tab => {
-    tab.addEventListener("click", () => switchTab(tab.dataset.tab));
+  // Tabs (writing group) — rebind helpers to ensure handlers exist and are defensive
+  function rebindMainTabs() {
+    try {
+      // Use event delegation on the .tabs-writing container so handlers
+      // are reliable regardless of element replace/timing. Mark the
+      // container when the delegate is installed to avoid double-binding.
+      const container = document.querySelector('.tabs-writing');
+      if (!container) return;
+  if (container.dataset.hasDelegate) return;
+  dbg('rebindMainTabs: installing delegated click handler on .tabs-writing');
+      // Install the delegate on document in capture phase to ensure we
+      // observe the event even if the .tabs-writing node is replaced later.
+      document.addEventListener('click', (e) => {
+        try {
+          const btn = e.target && e.target.closest ? e.target.closest('.tabs-writing .tab[data-tab]') : null;
+          if (!btn) return;
+          const t = btn.dataset.tab;
+          dbg(`mainTab (doc-delegated) click -> tab=${t}`);
+          if (!t) { dbg('mainTab click ignored: missing data-tab'); return; }
+          if (t === state.activeTab) { dbg(`mainTab click -> already active ${t}`); return; }
+          switchTab(t);
+        } catch (err) { dbg(`mainTab doc-delegated handler error: ${err?.message || err}`); }
+      }, true);
+      container.dataset.hasDelegate = '1';
+      dbg('rebindMainTabs: delegated handler installed (document)');
+    } catch (e) { dbg(`rebindMainTabs failed: ${e?.message || e}`); }
+  }
+
+  // Lore subtabs wiring
+  el.loreSubtabs?.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const name = btn.dataset.lore;
+      dbg(`loreSubtab click -> ${name}`);
+      switchLoreSubtab(name);
+    });
   });
 
 // Settings modal open/close
@@ -2917,6 +3160,16 @@ el.wordGoal?.addEventListener("input", () => {
     const cur = findEntryByKey(state.selectedId);
     if (cur) confirmAndDelete(cur.id);
   });
+
+  // Lore editor buttons
+  el.loreSwitchBtn?.addEventListener('click', () => {
+    dbg('loreSwitchBtn click');
+    try { switchTab('lore'); switchToLore(); } catch (e) { dbg(`switchToLore error: ${e?.message || e}`); }
+  });
+  el.loreBackBtn?.addEventListener('click', () => {
+    dbg('loreBackBtn click');
+    try { switchToStory(); } catch (e) { dbg(`switchToStory error: ${e?.message || e}`); }
+  });
   
   window.addEventListener("keydown", async (e) => {
     const isMac = navigator.platform.toUpperCase().includes("MAC");
@@ -2981,26 +3234,12 @@ el.wordGoal?.addEventListener("input", () => {
         confirmAndDelete(cur.id);
       }
     }
-  });
-
-  // Menu → Renderer listeners
-  if (ipcRenderer) {
-    ipcRenderer.on("menu:save", () => { saveToDisk(); });
-    ipcRenderer.on("menu:saveBack", async () => {
-      if (!state.workspacePath || !state.currentProjectDir) return alert("No active project to save back.");
-      const res = await ipcRenderer.invoke("project:saveBack", { workspacePath: state.workspacePath, projectDir: state.currentProjectDir }).catch(err => ({ ok:false, error:String(err) }));
-  if (!res?.ok) return alert(`Save Back failed:\n${res?.error||"Unknown error"}`);
-  alert(`Workspace saved back to:\n${res.target || state.currentProjectDir}`);
-    });
-    ipcRenderer.on("menu:openPicker", () => { showProjectPicker(); });
-    ipcRenderer.on("menu:openFinder", () => { showFinder(""); });
-    
      // Handle delete command from menu
     ipcRenderer.on("menu:delete", () => {
       const cur = findEntryByKey(state.selectedId);
       if (cur) confirmAndDelete(cur.id);
     });
-  }
+  });
 
   // DB sync function - downloads latest data from DB to project directory
   // DB->local sync and related legacy helpers removed from renderer.
@@ -3123,8 +3362,14 @@ if (!state.currentProjectDir || !state.workspacePath) {
   return;
 }
 
-    await appLoadFromDisk();
-    renderList();
+  await appLoadFromDisk();
+  renderList();
+  // Ensure main tab handlers are bound after DOM and data load
+  try {
+    dbg('DOMContentLoaded: about to call rebindMainTabs');
+    rebindMainTabs();
+    dbg('DOMContentLoaded: rebindMainTabs returned');
+  } catch (e) { dbg(`rebindMainTabs call failed: ${e?.message || e}`); }
 
     // Ensure BG node exists, then apply theme/bg
     ensureAppBg();
@@ -3134,4 +3379,20 @@ if (!state.currentProjectDir || !state.workspacePath) {
     dbg(`Workspace ready: ${SAVE_FILE}`);
   });
 
-})();
+    // Global capture-phase logging for sidebar clicks to diagnose swallowed events.
+    // Logs only when clicks occur inside the .sidebar element.
+    try {
+      document.addEventListener('click', function(ev) {
+        try {
+          var tg = ev.target;
+          if (!tg || !tg.closest) return;
+          var inSidebar = !!tg.closest('.sidebar');
+          if (!inSidebar) return;
+          var tabAnc = tg.closest('.tab');
+          var tabName = (tabAnc && tabAnc.dataset) ? tabAnc.dataset.tab : null;
+          dbg('[CAPTURE] sidebar click target=' + (tg.tagName || '') + ' id=' + (tg.id||'') + ' classes=' + (tg.className||'') + ' tabAncestor=' + (tabName||'none') + ' isTrusted=' + (!!ev.isTrusted));
+        } catch (err) { dbg('[CAPTURE] error ' + (err && err.message)); }
+      }, true);
+    } catch (e) { dbg('Failed to install capture-phase sidebar click logger: ' + (e && e.message)); }
+
+  })();

@@ -8,7 +8,8 @@ const fs = require("fs");
 // Enable env vars and TS in main, then load IPC handlers
 require("dotenv/config");
 require("ts-node/register");
-require("./src/main/ipc.ts");
+// Load IPC handlers and capture exported helpers (performLogout)
+const ipcModule = require("./src/main/ipc.ts");
 
 // Temporary flag to disable DB sync while keeping auth
 global.DB_SYNC_ENABLED = false;
@@ -23,7 +24,8 @@ const PROJECTS_ROOT = () => path.join(app.getPath("documents"), "InkDoodleProjec
 const WORKSPACE_DIR = () => path.join(app.getPath("userData"), "workspace");
 
 // Tracks currently loaded project dir (absolute path)
-let currentProjectDir = null;
+// Exposed on global so other main-process modules (ipc.ts) can clear it during logout.
+global.currentProjectDir = null;
 
 // ---------- FS helpers ----------
 function ensureDir(dir) { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); }
@@ -422,8 +424,8 @@ ipcMain.handle("project:delete", async (_evt, { dir }) => {
     appendDebugLog(`project:delete — Deleting project "${projectName}" at ${dir}`);
     fs.rmSync(dir, { recursive: true, force: true });
     appendDebugLog(`project:delete — Deleted project "${projectName}"`);
-    if (currentProjectDir && path.resolve(currentProjectDir) === path.resolve(dir)) {
-      currentProjectDir = null;
+    if (global.currentProjectDir && path.resolve(global.currentProjectDir) === path.resolve(dir)) {
+      global.currentProjectDir = null;
     }
     return { ok: true };
   } catch (e) {
@@ -448,97 +450,97 @@ ipcMain.handle("project:load", async (_evt, { dir }) => {
       }
     } catch (e) {}
   appendDebugLog(`project:load — Starting load of project "${incomingName}" from ${dir} into workspace ${ws}`, dir);
-    if (currentProjectDir) {
+    if (global.currentProjectDir) {
       try {
-        ensureDir(currentProjectDir);
+        ensureDir(global.currentProjectDir);
         // log auto-save-back start
-        let curName = path.basename(currentProjectDir);
+        let curName = path.basename(global.currentProjectDir);
         try {
-          const pj2 = path.join(currentProjectDir, 'data', 'project.json');
+          const pj2 = path.join(global.currentProjectDir, 'data', 'project.json');
           if (fs.existsSync(pj2)) {
             const raw2 = fs.readFileSync(pj2, 'utf8');
             const obj2 = JSON.parse(raw2);
             curName = obj2?.project?.name || curName;
           }
         } catch (e) {}
-        appendDebugLog(`project:saveBack — Auto-saving current workspace ${ws} back to project "${curName}" at ${currentProjectDir}`);
-        copyDirSync(ws, currentProjectDir);
+        appendDebugLog(`project:saveBack — Auto-saving current workspace ${ws} back to project "${curName}" at ${global.currentProjectDir}`);
+        copyDirSync(ws, global.currentProjectDir);
         // Provide a file-level summary of what was saved back
         try {
           const files = listFilesRecursive(ws, 500);
-          appendDebugLog(`project:saveBack — Completed auto-save-back of project "${curName}" → ${currentProjectDir} (files saved: ${files.length})`, currentProjectDir);
-          if (files.length) appendDebugLog(`project:saveBack — Sample files: ${files.slice(0,50).join(', ')}`, currentProjectDir);
+          appendDebugLog(`project:saveBack — Completed auto-save-back of project "${curName}" → ${global.currentProjectDir} (files saved: ${files.length})`, global.currentProjectDir);
+          if (files.length) appendDebugLog(`project:saveBack — Sample files: ${files.slice(0,50).join(', ')}`, global.currentProjectDir);
         } catch (e) {
-          appendDebugLog(`project:saveBack — Completed auto-save-back of project "${curName}" → ${currentProjectDir}`);
+          appendDebugLog(`project:saveBack — Completed auto-save-back of project "${curName}" → ${global.currentProjectDir}`);
         }
       } catch (e) {
-        appendDebugLog(`project:saveBack — Auto-save-back failed for ${currentProjectDir}: ${e?.message || e}`);
+        appendDebugLog(`project:saveBack — Auto-save-back failed for ${global.currentProjectDir}: ${e?.message || e}`);
       }
     }
     appendDebugLog(`project:load — Clearing workspace directory: ${ws}`);
     emptyDirSync(ws);
     appendDebugLog(`project:load — Copying project files from ${dir} → ${ws}`);
     copyDirSync(dir, ws);
-    currentProjectDir = dir;
-    appendDebugLog(`project:load — Completed load of project "${incomingName}" → workspace ${ws}`, dir);
+  global.currentProjectDir = dir;
+  appendDebugLog(`project:load — Completed load of project "${incomingName}" → workspace ${ws}`, dir);
 
-    return { ok: true, activePath: ws, currentProjectDir };
+  return { ok: true, activePath: ws, currentProjectDir: global.currentProjectDir };
   } catch (e) {
     return { ok: false, error: String(e) };
   }
 });
 
 ipcMain.handle("project:activePath", async () => {
-  try { return { ok: true, activePath: WORKSPACE_DIR(), currentProjectDir }; }
+  try { return { ok: true, activePath: WORKSPACE_DIR(), currentProjectDir: global.currentProjectDir }; }
   catch (e) { return { ok: false, error: String(e) }; }
 });
 
 ipcMain.handle("project:saveBack", async () => {
   try {
-    if (!currentProjectDir) throw new Error("No project loaded.");
+    if (!global.currentProjectDir) throw new Error("No project loaded.");
     const ws = WORKSPACE_DIR();
     if (!fs.existsSync(ws)) throw new Error("Workspace missing.");
     // read project name for logging
-    let curName = path.basename(currentProjectDir);
+    let curName = path.basename(global.currentProjectDir);
     try {
-      const pj2 = path.join(currentProjectDir, 'data', 'project.json');
+      const pj2 = path.join(global.currentProjectDir, 'data', 'project.json');
       if (fs.existsSync(pj2)) {
         const raw2 = fs.readFileSync(pj2, 'utf8');
         const obj2 = JSON.parse(raw2);
         curName = (obj2 && obj2.project && obj2.project.name) || curName;
       }
     } catch (e) {}
-    appendDebugLog(`project:saveBack — Manual save-back starting for project "${curName}" at ${currentProjectDir}`);
-    ensureDir(currentProjectDir);
+    appendDebugLog(`project:saveBack — Manual save-back starting for project "${curName}" at ${global.currentProjectDir}`);
+    ensureDir(global.currentProjectDir);
     // Copy workspace -> project (overwrite existing files)
-    copyDirSync(ws, currentProjectDir);
+    copyDirSync(ws, global.currentProjectDir);
     // Debug: enumerate workspace and project files to detect stale files
     try {
       const srcFiles = listFilesRecursive(ws, 10000) || [];
-      const destFiles = listFilesRecursive(currentProjectDir, 10000) || [];
+  const destFiles = listFilesRecursive(global.currentProjectDir, 10000) || [];
       const srcSet = new Set(srcFiles.map(s => s.replace(/\\/g, '/')));
       const stale = destFiles.filter(f => !srcSet.has(f.replace(/\\/g, '/')));
       for (const rel of stale) {
-        const destPath = path.join(currentProjectDir, rel);
+  const destPath = path.join(global.currentProjectDir, rel);
         try {
           fs.rmSync(destPath, { force: true });
         } catch (e) {
-          appendDebugLog(`project:saveBack — failed removing stale file ${rel}: ${e?.message || e}`, currentProjectDir);
+          appendDebugLog(`project:saveBack — failed removing stale file ${rel}: ${e?.message || e}`, global.currentProjectDir);
         }
       }
     } catch (e) {
-      appendDebugLog(`project:saveBack — mirror cleanup failed: ${e?.message || e}`, currentProjectDir);
+  appendDebugLog(`project:saveBack — mirror cleanup failed: ${e?.message || e}`, global.currentProjectDir);
     }
     try {
       const files = listFilesRecursive(ws, 500);
-      appendDebugLog(`project:saveBack — Manual save-back completed for project "${curName}" → ${currentProjectDir} (files saved: ${files.length})`, currentProjectDir);
-      if (files.length) appendDebugLog(`project:saveBack — Sample files: ${files.slice(0,50).join(', ')}`, currentProjectDir);
+  appendDebugLog(`project:saveBack — Manual save-back completed for project "${curName}" → ${global.currentProjectDir} (files saved: ${files.length})`, global.currentProjectDir);
+  if (files.length) appendDebugLog(`project:saveBack — Sample files: ${files.slice(0,50).join(', ')}`, global.currentProjectDir);
     } catch (e) {
-      appendDebugLog(`project:saveBack — Manual save-back completed for project "${curName}" → ${currentProjectDir}`);
+      appendDebugLog(`project:saveBack — Manual save-back completed for project "${curName}" → ${global.currentProjectDir}`);
     }
-    return { ok: true, target: currentProjectDir };
+    return { ok: true, target: global.currentProjectDir };
   } catch (e) {
-    appendDebugLog(`project:saveBack — Failed save-back to ${currentProjectDir}: ${e && e.message ? e.message : e}`);
+    appendDebugLog(`project:saveBack — Failed save-back to ${global.currentProjectDir}: ${e && e.message ? e.message : e}`);
     return { ok: false, error: String(e) };
   }
 });
@@ -568,17 +570,40 @@ app.whenReady().then(async () => {
   });
 });
 
-app.on("before-quit", () => {
+app.on("before-quit", async (e) => {
+  // Ensure we wait for logout to finish before quitting. Prevent default quit
+  // and re-invoke quit once logout completes. Use a guard to avoid loops.
   try {
-    if (currentProjectDir) {
-      const ws = WORKSPACE_DIR();
-      if (fs.existsSync(ws)) {
-        copyDirSync(ws, currentProjectDir);
-        console.log("[main] Saved workspace back to", currentProjectDir);
+    if (global._logoutInProgress) return;
+    e.preventDefault();
+    global._logoutInProgress = true;
+
+    if (ipcModule && typeof ipcModule.performLogout === 'function') {
+      try {
+        const q = await pool.query(`SELECT 1 FROM prefs WHERE key = 'auth_user' LIMIT 1;`);
+        if (q && q.rowCount > 0) {
+          appendDebugLog('before-quit — auth_user present, invoking performLogout (blocking exit until complete)');
+          await ipcModule.performLogout({ projectPath: WORKSPACE_DIR(), workspaceExists: fs.existsSync(WORKSPACE_DIR()) });
+        } else {
+          appendDebugLog('before-quit — no auth_user, skipping performLogout');
+        }
+      } catch (qe) {
+        appendDebugLog(`before-quit — failed checking auth_user or performLogout failed: ${qe?.message || qe}`);
       }
+    } else {
+      appendDebugLog('before-quit — performLogout not available on ipc module');
     }
-  } catch (e) {
-    console.warn("[main] Save-back on exit failed:", e);
+
+    // Logout finished (or skipped) — allow quit to proceed.
+    global._logoutInProgress = false;
+    appendDebugLog('before-quit — performLogout finished; continuing quit');
+    // Re-trigger quit; since we cleared _logoutInProgress it will proceed.
+    app.quit();
+  } catch (err) {
+    appendDebugLog(`before-quit handler failed: ${err?.message || err}`);
+    // On error, fall back to quitting so user is not stuck.
+    try { global._logoutInProgress = false; } catch (e) {}
+    app.quit();
   }
 });
 

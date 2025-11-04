@@ -294,6 +294,20 @@ body {
   background: linear-gradient(180deg, var(--bg), var(--bg-soft));
 }
 
+/* Lore editor: reuse editor styles but keep distinct block for future tweaks */
+.lore-editor {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  position: relative;
+  background: linear-gradient(180deg, var(--bg), var(--bg-soft));
+}
+
+.lore-header { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+
+
 /* NEW: optional dim overlay on editor panel */
 .editor.dimmed {
   background: color-mix(in oklab, var(--bg) 90%, black 10%);

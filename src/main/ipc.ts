@@ -1,7 +1,7 @@
 // ink-doodle/src/main/ipc.ts
 
 // Use CommonJS so Node can load this via ts-node/register
-const { ipcMain, app } = require('electron');
+const { ipcMain, app, BrowserWindow } = require('electron');
 import { appendDebugLog, getGlobalLogPath } from './log';
 import { pingDB, pool } from './db';
 // db.sync IPC handlers intentionally removed from automatic registration.
@@ -93,7 +93,20 @@ ipcMain.handle('auth:login', async (_evt, { email }) => {
     if (res && res.ok) {
       try {
         // fire-and-forget: do not block the login response
-        fullLoad().then(r => appendDebugLog(`auth:login — fullLoad result: ${JSON.stringify(r)}`)).catch(e => appendDebugLog(`auth:login — fullLoad failed: ${e?.message || e}`));
+        fullLoad().then(r => {
+          appendDebugLog(`auth:login — fullLoad result: ${JSON.stringify(r)}`);
+          try {
+            // Notify renderer that fullLoad completed so UI can refresh project list.
+            const w = (BrowserWindow && BrowserWindow.getAllWindows && BrowserWindow.getAllWindows()[0]) || (BrowserWindow && BrowserWindow.getFocusedWindow && BrowserWindow.getFocusedWindow());
+            if (w && w.webContents && w.webContents.send) {
+              try { w.webContents.send('auth:fullLoadDone', { result: r }); } catch (sendErr) { appendDebugLog(`auth:login — failed to send auth:fullLoadDone: ${sendErr?.message || sendErr}`); }
+            } else {
+              appendDebugLog('auth:login — no renderer window available to send auth:fullLoadDone');
+            }
+          } catch (notifyErr) {
+            appendDebugLog(`auth:login — notification error: ${notifyErr?.message || notifyErr}`);
+          }
+        }).catch(e => appendDebugLog(`auth:login — fullLoad failed: ${e?.message || e}`));
       } catch (e) {
         appendDebugLog(`auth:login — failed to start fullLoad: ${e?.message || e}`);
       }
@@ -108,69 +121,120 @@ ipcMain.handle('auth:login', async (_evt, { email }) => {
 
 // Logout: clear local workspace/projects and remove auth_user. Uploads
 // are intentionally disabled to avoid automatic local->DB writes.
-ipcMain.handle('auth:logout', async (_evt, payload?: { projectPath?: string; workspaceExists?: boolean }) => {
-  appendDebugLog('auth:logout — Starting logout process');
+// Extracted logout functionality so it can be reused programmatically by
+// the main process (for example during app quit) as well as by the
+// IPC handler below.
+async function performLogout(payload?: { projectPath?: string; workspaceExists?: boolean }) {
+  appendDebugLog('performLogout — Starting logout process');
   try {
-    try { global.DB_SYNC_ENABLED = true; appendDebugLog('auth:logout — DB_SYNC_ENABLED set true'); } catch (e) { /* best-effort */ }
+    try { global.DB_SYNC_ENABLED = true; appendDebugLog('performLogout — DB_SYNC_ENABLED set true'); } catch (e) { /* best-effort */ }
 
     const projectPath = payload?.projectPath;
     const workspaceExists = payload?.workspaceExists ?? false;
 
-  appendDebugLog(`auth:logout — Workspace path: ${projectPath || '(none)'}`);
-    appendDebugLog(`auth:logout — Workspace exists: ${workspaceExists}`);
+    appendDebugLog(`performLogout — Workspace path: ${projectPath || '(none)'}`);
+    appendDebugLog(`performLogout — Workspace exists: ${workspaceExists}`);
 
-    // Always clean up local projects directory
     const projectsRoot = path.join(app.getPath('documents'), 'InkDoodleProjects');
     try {
-      if (fs.existsSync(projectsRoot)) {
-        const projCount = fs.readdirSync(projectsRoot).length;
-        appendDebugLog(`auth:logout — Clearing ${projCount} projects from ${projectsRoot}`);
-        fs.rmSync(projectsRoot, { recursive: true, force: true });
+      appendDebugLog(`performLogout — Starting upload of local projects from ${projectsRoot}`);
+      const upRes = await uploadLocalProjects(projectsRoot, { performUpload: true });
+      appendDebugLog(`performLogout — uploadLocalProjects result: ${JSON.stringify(upRes)}`);
+    } catch (e) {
+      appendDebugLog(`performLogout — uploadLocalProjects failed: ${e?.message || e}`);
+      // Proceed with logout cleanup even if upload fails (to avoid leaving user stuck).
+    }
+
+    try {
+      if (!fs.existsSync(projectsRoot)) {
+        appendDebugLog('performLogout — Projects directory did not exist, creating fresh');
         fs.mkdirSync(projectsRoot, { recursive: true });
-        appendDebugLog('auth:logout — Successfully cleared and reinitialized projects directory');
       } else {
-        appendDebugLog('auth:logout — Projects directory did not exist, creating fresh');
-        fs.mkdirSync(projectsRoot, { recursive: true });
+        const items = fs.readdirSync(projectsRoot, { withFileTypes: true });
+        appendDebugLog(`performLogout — Clearing ${items.length} projects from ${projectsRoot}`);
+        for (const it of items) {
+          const childPath = path.join(projectsRoot, it.name);
+          try {
+            fs.rmSync(childPath, { recursive: true, force: true });
+            appendDebugLog(`performLogout — removed ${childPath}`);
+          } catch (ie) {
+            appendDebugLog(`performLogout — failed to remove ${childPath}: ${ie?.message || ie}`);
+          }
+        }
+
+        try { if (!fs.existsSync(projectsRoot)) fs.mkdirSync(projectsRoot, { recursive: true }); } catch (e) { /* best-effort */ }
+
+        try {
+          const remaining = fs.existsSync(projectsRoot) ? fs.readdirSync(projectsRoot) : [];
+          if (remaining.length === 0) appendDebugLog('performLogout — Successfully cleared and reinitialized projects directory');
+          else appendDebugLog(`performLogout — Projects directory cleanup completed with remaining items: ${remaining.join(', ')}`);
+        } catch (ve) {
+          appendDebugLog(`performLogout — Could not verify projects directory contents: ${ve?.message || ve}`);
+        }
       }
     } catch (e) {
-      appendDebugLog(`auth:logout — Failed to clear projects directory: ${e?.message || e}`);
+      appendDebugLog(`performLogout — Failed to clear projects directory (outer): ${e?.message || e}`);
     }
 
     // Clear workspace if provided
     if (projectPath) {
       try {
-        if (fs.existsSync(projectPath)) {
-          appendDebugLog(`auth:logout — Clearing workspace at: ${projectPath}`);
-          fs.rmSync(projectPath, { recursive: true, force: true });
-          fs.mkdirSync(projectPath, { recursive: true });
-          appendDebugLog('auth:logout — Successfully cleared and reinitialized workspace');
+        if (!fs.existsSync(projectPath)) {
+          appendDebugLog('performLogout — Workspace directory did not exist, skipping cleanup');
         } else {
-          appendDebugLog('auth:logout — Workspace directory did not exist, skipping cleanup');
+          appendDebugLog(`performLogout — Clearing workspace at: ${projectPath}`);
+          const items = fs.readdirSync(projectPath, { withFileTypes: true });
+          for (const it of items) {
+            const childPath = path.join(projectPath, it.name);
+            try {
+              fs.rmSync(childPath, { recursive: true, force: true });
+              appendDebugLog(`performLogout — removed workspace item ${childPath}`);
+            } catch (ie) {
+              appendDebugLog(`performLogout — failed to remove workspace item ${childPath}: ${ie?.message || ie}`);
+            }
+          }
+          try { if (!fs.existsSync(projectPath)) fs.mkdirSync(projectPath, { recursive: true }); } catch (e) { /* best-effort */ }
+          try {
+            const remaining = fs.existsSync(projectPath) ? fs.readdirSync(projectPath) : [];
+            if (remaining.length === 0) appendDebugLog('performLogout — Successfully cleared and reinitialized workspace');
+            else appendDebugLog(`performLogout — Workspace cleanup completed with remaining items: ${remaining.join(', ')}`);
+          } catch (ve) {
+            appendDebugLog(`performLogout — Could not verify workspace contents: ${ve?.message || ve}`);
+          }
         }
       } catch (e) {
-        appendDebugLog(`auth:logout — Failed to clear workspace: ${e?.message || e}`);
+        appendDebugLog(`performLogout — Failed to clear workspace: ${e?.message || e}`);
       }
     }
 
     // Clear auth_user in prefs
     try {
       await pool.query(`DELETE FROM prefs WHERE key = 'auth_user';`);
-      appendDebugLog('auth:logout — Successfully cleared auth_user from prefs');
+      appendDebugLog('performLogout — Successfully cleared auth_user from prefs');
     } catch (e) {
-      appendDebugLog(`auth:logout — Failed to clear auth_user from prefs: ${e?.message || e}`);
+      appendDebugLog(`performLogout — Failed to clear auth_user from prefs: ${e?.message || e}`);
       throw e; // Auth clear failure should abort logout
     }
 
-    appendDebugLog('auth:logout — Logout process completed successfully');
+    try { global.currentProjectDir = null; appendDebugLog('performLogout — cleared global.currentProjectDir'); } catch (e) { /* best-effort */ }
+    appendDebugLog('performLogout — Logout process completed successfully');
     return { ok: true };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    appendDebugLog(`auth:logout — Process failed with error: ${msg}`);
+    appendDebugLog(`performLogout — Process failed with error: ${msg}`);
     return { ok: false, error: msg };
   } finally {
-    try { global.DB_SYNC_ENABLED = false; appendDebugLog('auth:logout — DB_SYNC_ENABLED set false'); } catch (e) { /* best-effort */ }
+    try { global.DB_SYNC_ENABLED = false; appendDebugLog('performLogout — DB_SYNC_ENABLED set false'); } catch (e) { /* best-effort */ }
   }
+}
+
+// Keep IPC handler but delegate to performLogout so behavior is identical.
+ipcMain.handle('auth:logout', async (_evt, payload?: { projectPath?: string; workspaceExists?: boolean }) => {
+  return await performLogout(payload);
 });
+
+// Export the function so other main modules (index.js) can call it on quit.
+try { module.exports.performLogout = performLogout; } catch (e) { /* best-effort */ }
 
 // Auth + Remote Projects handlers
 
