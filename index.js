@@ -570,11 +570,20 @@ app.whenReady().then(async () => {
   });
 });
 
-app.on("before-quit", async (e) => {
-  // Ensure we wait for logout to finish before quitting. Prevent default quit
-  // and re-invoke quit once logout completes. Use a guard to avoid loops.
+// Named before-quit handler to avoid accidental re-entry loops. The handler
+// prevents the default quit, performs a fail-fast logout, then removes
+// itself before re-invoking quit so a second before-quit won't re-run the
+// same flow repeatedly.
+async function onBeforeQuit(e) {
   try {
-    if (global._logoutInProgress) return;
+    if (global._logoutInProgress) {
+      appendDebugLog('before-quit — logout already in progress, skipping additional before-quit');
+      // Do not prevent default here so the quit can continue if another
+      // listener expects it; simply return.
+      return;
+    }
+
+    // Prevent the default quit until we've attempted logout.
     e.preventDefault();
     global._logoutInProgress = true;
 
@@ -583,7 +592,15 @@ app.on("before-quit", async (e) => {
         const q = await pool.query(`SELECT 1 FROM prefs WHERE key = 'auth_user' LIMIT 1;`);
         if (q && q.rowCount > 0) {
           appendDebugLog('before-quit — auth_user present, invoking performLogout (blocking exit until complete)');
-          await ipcModule.performLogout({ projectPath: WORKSPACE_DIR(), workspaceExists: fs.existsSync(WORKSPACE_DIR()) });
+          // Fail-fast: do not block quit longer than 10s
+          const logoutPromise = ipcModule.performLogout({ projectPath: WORKSPACE_DIR(), workspaceExists: fs.existsSync(WORKSPACE_DIR()) });
+          const timeout = new Promise(resolve => setTimeout(() => resolve({ ok: false, error: 'performLogout: timeout' }), 10000));
+          try {
+            const r = await Promise.race([logoutPromise, timeout]);
+            appendDebugLog(`before-quit — performLogout result (or timeout): ${JSON.stringify(r)}`);
+          } catch (ex) {
+            appendDebugLog(`before-quit — performLogout threw: ${ex?.message || ex}`);
+          }
         } else {
           appendDebugLog('before-quit — no auth_user, skipping performLogout');
         }
@@ -594,17 +611,22 @@ app.on("before-quit", async (e) => {
       appendDebugLog('before-quit — performLogout not available on ipc module');
     }
 
-    // Logout finished (or skipped) — allow quit to proceed.
-    global._logoutInProgress = false;
+    // Remove this handler to avoid re-entry when calling app.quit()
+    try { app.removeListener('before-quit', onBeforeQuit); } catch (e) { /* best-effort */ }
+
     appendDebugLog('before-quit — performLogout finished; continuing quit');
-    // Re-trigger quit; since we cleared _logoutInProgress it will proceed.
+    // Re-invoke quit; since we've removed this handler it won't loop.
     app.quit();
   } catch (err) {
     appendDebugLog(`before-quit handler failed: ${err?.message || err}`);
+    try { app.removeListener('before-quit', onBeforeQuit); } catch (e) {}
     // On error, fall back to quitting so user is not stuck.
-    try { global._logoutInProgress = false; } catch (e) {}
     app.quit();
+  } finally {
+    try { global._logoutInProgress = false; } catch (e) {}
   }
-});
+}
+
+app.on('before-quit', onBeforeQuit);
 
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });

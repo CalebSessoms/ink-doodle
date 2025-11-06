@@ -3511,11 +3511,7 @@ el.wordGoal?.addEventListener("input", () => {
         confirmAndDelete(cur.id);
       }
     }
-     // Handle delete command from menu
-    ipcRenderer.on("menu:delete", () => {
-      const cur = findEntryByKey(state.selectedId);
-      if (cur) confirmAndDelete(cur.id);
-    });
+    // Handle delete command from menu - moved to single registration during init
   });
 
   // DB sync function - downloads latest data from DB to project directory
@@ -3647,6 +3643,15 @@ if (!state.currentProjectDir || !state.workspacePath) {
     rebindMainTabs();
     dbg('DOMContentLoaded: rebindMainTabs returned');
   } catch (e) { dbg(`rebindMainTabs call failed: ${e?.message || e}`); }
+
+  // Register menu IPC handlers once (avoid duplicate listeners)
+  try {
+    try { ipcRenderer.removeAllListeners && ipcRenderer.removeAllListeners('menu:delete'); } catch (e) {}
+    ipcRenderer.on('menu:delete', () => {
+      const cur = findEntryByKey(state.selectedId);
+      if (cur) confirmAndDelete(cur.id);
+    });
+  } catch (e) { dbg(`Failed to register menu:delete handler: ${e?.message || e}`); }
 
     // Ensure BG node exists, then apply theme/bg
     ensureAppBg();

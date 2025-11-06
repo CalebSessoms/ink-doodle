@@ -357,3 +357,15 @@ ipcMain.handle('app:willQuit', async (_evt, payload?: { projectPath?: string }) 
     return { ok: false, error: msg };
   }
 });
+
+// Return current auth user (if any) from prefs. Renderer expects { ok: true, user }
+ipcMain.handle('auth:get', async () => {
+  try {
+    const res = await pool.query(`SELECT value AS user FROM prefs WHERE key = 'auth_user' LIMIT 1;`);
+    const u = res.rows?.[0]?.user ?? null;
+    return { ok: true, user: u };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: msg };
+  }
+});
