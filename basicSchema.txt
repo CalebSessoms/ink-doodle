@@ -137,6 +137,38 @@ Foreign-key constraints:
 Triggers:
 trg_refs_updated_at BEFORE UPDATE ON refs FOR EACH ROW EXECUTE FUNCTION set_updated_at()
 
+Table "public.lore"
+Column	Type	Collation	Nullable	Default
+id	text		not null	
+project_id	text		not null	
+creator_id	integer		not null	
+number	integer			
+title	text		not null	
+content	text			
+status	text		not null	'draft'::text
+summary	text			
+tags	text[]			'{}'::text[]
+lore_kind	text			
+entry1_name	text			
+entry1_content	text			
+entry2_name	text			
+entry2_content	text			
+entry3_name	text			
+entry3_content	text			
+entry4_name	text			
+entry4_content	text			
+created_at	timestamp without time zone		not null	now()
+updated_at	timestamp without time zone		not null	now()
+code	integer			
+Indexes:
+"lore_pkey" PRIMARY KEY, btree (id)
+"lore_code_key" UNIQUE CONSTRAINT, btree (code)
+Foreign-key constraints:
+"lore_creator_id_fkey" FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE
+"lore_project_id_fkey" FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+Triggers:
+trg_lore_updated_at BEFORE UPDATE ON lore FOR EACH ROW EXECUTE FUNCTION set_updated_at()
+
 Table "public.prefs"
 Column	Type	Collation	Nullable	Default
 key	text		not null	

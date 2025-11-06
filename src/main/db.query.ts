@@ -110,6 +110,21 @@ export async function getRefIdsForCreator(creatorId: string): Promise<string[]> 
 }
 
 /**
+ * Get all lore ids (strings) for a given creator id.
+ */
+export async function getLoreIdsForCreator(creatorId: string): Promise<string[]> {
+  const q = `SELECT id FROM lore WHERE creator_id = $1;`;
+  const res = await pool.query(q, [creatorId]);
+  if (!res.rows || res.rows.length === 0) return [];
+  const out: string[] = [];
+  for (const r of res.rows) {
+    const v = (r as any).id;
+    if (v !== null && v !== undefined) out.push(String(v));
+  }
+  return out;
+}
+
+/**
  * Get a single project row by its `code` (the string used locally as the project id).
  * Returns the raw row object or null when not found.
  */
@@ -179,4 +194,4 @@ export async function getProjectEntries(projectCode: string): Promise<{ chapters
   };
 }
 
-export default { getColumnValue, getFirstRow, getProjectIdsForCreator, getChapterIdsForCreator, getNoteIdsForCreator, getRefIdsForCreator, getProjectInfo, getProjectEntries };
+export default { getColumnValue, getFirstRow, getProjectIdsForCreator, getChapterIdsForCreator, getNoteIdsForCreator, getRefIdsForCreator, getLoreIdsForCreator, getProjectInfo, getProjectEntries };

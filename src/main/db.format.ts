@@ -45,6 +45,7 @@ let lastLoadedCreator: Record<string, any> | null = null;
 let lastLoadedChapterCols: Record<string, any[]> | null = null;
 let lastLoadedNoteCols: Record<string, any[]> | null = null;
 let lastLoadedRefCols: Record<string, any[]> | null = null;
+let lastLoadedLoreCols: Record<string, any[]> | null = null;
 
 export async function loadProjectForUpload(projectPath: string): Promise<any> {
   const data = await collectProjectData(projectPath);
@@ -59,7 +60,7 @@ export async function loadProjectForUpload(projectPath: string): Promise<any> {
  * @param {string} projectPath - absolute path to the project directory
  * @returns {Promise<{project: any, chapters: any[], notes: any[], refs: any[]}>}
  */
-export async function collectProjectData(projectPath: string): Promise<{project: any, creator: any, chapters: any[], notes: any[], refs: any[], chapter_ids: number[], note_ids: number[], ref_ids: number[], chapter_cols: Record<string, any[]>, note_cols: Record<string, any[]>, ref_cols: Record<string, any[]>}> {
+export async function collectProjectData(projectPath: string): Promise<{project: any, creator: any, chapters: any[], notes: any[], refs: any[], lore: any[], chapter_ids: number[], note_ids: number[], ref_ids: number[], lore_ids: number[], chapter_cols: Record<string, any[]>, note_cols: Record<string, any[]>, ref_cols: Record<string, any[]>, lore_cols: Record<string, any[]>}> {
   // Read project.json
   const projectFile = path.join(projectPath, 'data', 'project.json');
   let raw: any;
@@ -160,6 +161,7 @@ export async function collectProjectData(projectPath: string): Promise<{project:
   const chapters = await readEntries('chapters');
   const notes = await readEntries('notes');
   const refs = await readEntries('refs');
+  const lores = await readEntries('lore');
 
   // Normalize entries (unwrap wrappers), set updated_at to current time.
   const nowIsoEntries = new Date().toISOString();
@@ -174,6 +176,7 @@ export async function collectProjectData(projectPath: string): Promise<{project:
   const normChapters = chapters.map(c => normalizeEntry(c, 'chapter'));
   const normNotes = notes.map(n => normalizeEntry(n, 'note'));
   const normRefs = refs.map(r => normalizeEntry(r, 'ref'));
+  const normLores = lores.map(l => normalizeEntry(l, 'lore'));
 
   // IDs are included as one of the fields in the per-column collections
 
@@ -191,6 +194,13 @@ export async function collectProjectData(projectPath: string): Promise<{project:
   const refCols: Record<string, any[]> = {
     id: [], code: [], project_id: [], creator_id: [], number: [], title: [], tags: [],
     reference_type: [], summary: [], source_link: [], content: [], created_at: [], updated_at: []
+  };
+
+  const loreCols: Record<string, any[]> = {
+    id: [], code: [], project_id: [], creator_id: [], number: [], title: [], content: [],
+    status: [], summary: [], tags: [], created_at: [], updated_at: [], lore_kind: [],
+    entry1_name: [], entry1_content: [], entry2_name: [], entry2_content: [],
+    entry3_name: [], entry3_content: [], entry4_name: [], entry4_content: []
   };
 
   for (const c of normChapters) {
@@ -248,9 +258,54 @@ export async function collectProjectData(projectPath: string): Promise<{project:
     refCols.updated_at.push(r.updated_at ?? null);
   }
 
+  for (const l of normLores) {
+    // Normalize lore id/code mapping: id <- code, code <- id (match other types)
+    loreCols.id.push(l.code ?? null);
+    loreCols.code.push(l.id ?? null);
+    loreCols.project_id.push(project[PROJECTS.ID] ?? l.project_id ?? null);
+    loreCols.creator_id.push(l.creator_id ?? null);
+    loreCols.number.push(l.number ?? null);
+    loreCols.title.push(l.title ?? null);
+    // Accept either `content` or legacy `body` keys
+    loreCols.content.push(l.content ?? l.body ?? null);
+    loreCols.status.push(l.status ?? null);
+    loreCols.summary.push(l.summary ?? null);
+    loreCols.tags.push(l.tags ?? []);
+    loreCols.created_at.push(l.created_at ?? null);
+    loreCols.updated_at.push(l.updated_at ?? null);
+    // lore_kind may be stored as lore_kind or legacy lore_type
+    loreCols.lore_kind.push(l.lore_kind ?? l.lore_type ?? l.loreType ?? null);
+
+    // Helper to pick common legacy key variants for field names/contents
+    const pick = (obj: any, candidates: string[]) => {
+      for (const k of candidates) {
+        if (Object.prototype.hasOwnProperty.call(obj, k)) return obj[k];
+      }
+      return null;
+    };
+
+    // entry1..entry4 name/content mapping with common legacy fallbacks
+    for (let i = 1; i <= 4; i++) {
+      const nameKeys = [`entry${i}name`, `entry${i}_name`, `Field ${i} Name`, `Field ${i}Name`, `Field ${i} Name`];
+      const contentKeys = [`entry${i}content`, `entry${i}_content`, `Field ${i} Content`, `Field ${i}Content`, `Field ${i} Content`];
+      const en = pick(l, nameKeys) ?? null;
+      const ec = pick(l, contentKeys) ?? null;
+      loreCols[`entry${i}_name`].push(en);
+      loreCols[`entry${i}_content`].push(ec);
+    }
+  }
+
+
+  // Note: lore entries are not yet read/populated here; the `loreCols` array is
+  // prepared so the upload flow can begin integrating lore support. When lore
+  // reading is added, entries should populate loreCols in the same pattern as
+  // chapters/notes/refs above.
+
+  // Return normalized entries and per-field collections
   // Return normalized entries and per-field collections
   lastLoadedChapterCols = chapterCols;
   lastLoadedNoteCols = noteCols;
+  lastLoadedLoreCols = loreCols;
   lastLoadedRefCols = refCols;
 
   return {
@@ -259,12 +314,15 @@ export async function collectProjectData(projectPath: string): Promise<{project:
     chapters: normChapters,
     notes: normNotes,
     refs: normRefs,
+    lore: [],
     chapter_ids: chapterCols.id.slice(),
     note_ids: noteCols.id.slice(),
     ref_ids: refCols.id.slice(),
+    lore_ids: [],
     chapter_cols: chapterCols,
     note_cols: noteCols,
-    ref_cols: refCols
+    ref_cols: refCols,
+    lore_cols: loreCols
   };
 }
 
@@ -289,6 +347,10 @@ export function getLastLoadedRefIds() {
   return lastLoadedRefCols ? (lastLoadedRefCols.id || []).slice() : [];
 }
 
+export function getLastLoadedLoreIds() {
+  return lastLoadedLoreCols ? (lastLoadedLoreCols.id || []).slice() : [];
+}
+
 export function getLastLoadedChapterCols() {
   return lastLoadedChapterCols;
 }
@@ -299,6 +361,10 @@ export function getLastLoadedNoteCols() {
 
 export function getLastLoadedRefCols() {
   return lastLoadedRefCols;
+}
+
+export function getLastLoadedLoreCols() {
+  return lastLoadedLoreCols;
 }
 
 /**
@@ -334,6 +400,10 @@ export function noteColsToRows() {
 
 export function refColsToRows() {
   return convertColsToRows(lastLoadedRefCols);
+}
+
+export function loreColsToRows() {
+  return convertColsToRows(lastLoadedLoreCols);
 }
 
 /**
@@ -403,6 +473,27 @@ export function getNextRef(): Record<string, any> | null {
 
   for (const k of keys) {
     const arr = lastLoadedRefCols[k];
+    if (Array.isArray(arr)) arr.shift();
+  }
+
+  return row;
+}
+
+export function getNextLore(): Record<string, any> | null {
+  if (!lastLoadedLoreCols) return null;
+  const keys = Object.keys(lastLoadedLoreCols);
+  if (keys.length === 0) return null;
+  const len = lastLoadedLoreCols[keys[0]]?.length || 0;
+  if (len === 0) return null;
+
+  const row: Record<string, any> = {};
+  for (const k of keys) {
+    const arr = lastLoadedLoreCols[k];
+    row[k] = Array.isArray(arr) ? arr[0] : null;
+  }
+
+  for (const k of keys) {
+    const arr = lastLoadedLoreCols[k];
     if (Array.isArray(arr)) arr.shift();
   }
 

@@ -1041,13 +1041,14 @@ function saveUIPrefsDebounced() {
       $("#pp-saveback").addEventListener("click", async () => {
         if (!state.workspacePath || !state.currentProjectDir) return alert("No active project to save back.");
         dbg("Saving project back to original directory...");
-        const res = await ipcRenderer.invoke("project:saveBack", { workspacePath: state.workspacePath, projectDir: state.currentProjectDir }).catch(e=>({ok:false,error:String(e)}));
-        if (!res?.ok) {
-          dbg(`Save back failed: ${res?.error || "Unknown error"}`);
-          return alert(`Save Back failed:\n${res?.error||"Unknown error"}`);
+        try {
+          await saveToWorkspaceAndProject();
+          dbg(`Project saved back to: ${state.currentProjectDir}`);
+          alert(`Workspace saved back to:\n${state.currentProjectDir}`);
+        } catch (e) {
+          dbg(`Save back failed: ${e?.message || String(e)}`);
+          return alert(`Save Back failed:\n${e?.message || String(e)}`);
         }
-        dbg(`Project saved back to: ${res.target || state.currentProjectDir}`);
-        alert(`Workspace saved back to:\n${res.target || state.currentProjectDir}`);
       });
 
       // Enhanced project creation with proper error handling
@@ -1942,8 +1943,13 @@ function saveUIPrefsDebounced() {
       }
     }, 50);
 
-    // Save changes
-    touchSave(true);
+    // Save changes - ensure newly created entries are marked dirty immediately
+    try {
+      // touchSave normally marks dirty and schedules autosave; be explicit here
+      state.dirty = true;
+      markDirty();
+      scheduleAutosave();
+    } catch (e) { /* best-effort */ }
     dbg(`created ${type} "${entry.title}" (ID: ${entry.id}) and selected it - pending save`);
   }
 
@@ -2165,6 +2171,23 @@ function saveUIPrefsDebounced() {
         cur.summary = el.synopsis?.value || "";
         cur.source_link = el.sourceLink?.value || "";
         cur.body = el.body?.value || "";
+      }
+      else if (cur.type === 'lore') {
+        // Read lore-specific editor fields here so collectProjectData()
+        // doesn't accidentally overwrite them (story UI uses el.titleInput).
+        try {
+          cur.title = el.loreTitle?.value || cur.title;
+          cur.lore_kind = el.loreKind?.value || cur.lore_kind || '';
+          cur.tags = parseTags(el.loreTags?.value || '');
+          cur.summary = el.loreSummary?.value || cur.summary || '';
+          cur.body = el.loreBody?.value || cur.body || '';
+          for (let i = 1; i <= 4; i++) {
+            const n = `entry${i}name`;
+            const c = `entry${i}content`;
+            if (el[n]) cur[n] = el[n].value || cur[n] || '';
+            if (el[c]) cur[c] = el[c].value || cur[c] || '';
+          }
+        } catch (e) { /* best-effort */ }
       }
       cur.updated_at = nowISO();
     }
@@ -2914,16 +2937,15 @@ function saveUIPrefsDebounced() {
   }
   // Save to both workspace and project directory
   async function saveToWorkspaceAndProject() {
-    if (!state.dirty) {
-      dbg(`workspace:save — No changes to save`);
-      return;
-    }
-    
+    // Always perform Save Back when requested — do not gate on state.dirty.
+    // This ensures an explicit Save Back always writes workspace files and
+    // copies them back to the project directory even if the autosave
+    // dirty tracking is out-of-sync.
+    dbg(`workspace:save — Save Back requested (forcing save regardless of dirty flag)`);
     try {
-      dbg(`workspace:save — Starting save of workspace changes`);
-      saveToDisk(); // Ensure changes are written to disk first
-      
-      dbg(`db:sync — Starting sync of workspace changes to DB`);
+      // Ensure UI values are flushed into state and write to disk
+      await saveToDisk(); // Ensure changes are written to disk first
+      dbg(`db:sync — Starting sync of workspace changes to DB (if enabled)`);
       const changes = getOrCreateChanges();
       
       // Log what we're about to sync
@@ -3462,9 +3484,12 @@ el.wordGoal?.addEventListener("input", () => {
     if (mod && e.shiftKey && e.key.toLowerCase() === "s") {
       e.preventDefault();
       if (!state.workspacePath || !state.currentProjectDir) return alert("No active project to save back.");
-      const res = await ipcRenderer.invoke("project:saveBack", { workspacePath: state.workspacePath, projectDir: state.currentProjectDir }).catch(err=>({ok:false,error:String(err)}));
-  if (!res?.ok) return alert(`Save Back failed:\n${res?.error||"Unknown error"}`);
-  alert(`Workspace saved back to:\n${res.target || state.currentProjectDir}`);
+      try {
+        await saveToWorkspaceAndProject();
+        alert(`Workspace saved back to:\n${state.currentProjectDir}`);
+      } catch (err) {
+        return alert(`Save Back failed:\n${err?.message || String(err)}`);
+      }
     }
 
     // Open Project Picker

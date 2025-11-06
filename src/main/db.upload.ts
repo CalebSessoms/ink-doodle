@@ -12,10 +12,12 @@ import {
   getLastLoadedCreator,
   getNextChapter,
   getNextNote,
-  getNextRef,
-  getLastLoadedChapterIds,
-  getLastLoadedNoteIds,
-  getLastLoadedRefIds,
+	getNextRef,
+	getNextLore,
+	getLastLoadedChapterIds,
+	getLastLoadedNoteIds,
+	getLastLoadedRefIds,
+	getLastLoadedLoreIds,
 } from './db.format';
 import { pool } from './db';
 import { getColumnValue, getFirstRow, getProjectIdsForCreator } from './db.query';
@@ -55,7 +57,8 @@ export async function uploadLocalProjects(rootDir: string, options?: { performUp
 	projects: { inserted: 0, updated: 0, deleted: 0, errors: 0 },
 	chapters: { inserted: 0, updated: 0, errors: 0 },
 	notes: { inserted: 0, updated: 0, errors: 0 },
-	refs: { inserted: 0, updated: 0, errors: 0 },
+		refs: { inserted: 0, updated: 0, errors: 0 },
+		lore: { inserted: 0, updated: 0, errors: 0 },
 	conflicts: 0,
 	skipped: 0,
   } as any;
@@ -89,14 +92,17 @@ export async function uploadLocalProjects(rootDir: string, options?: { performUp
 		let localChapterCount = 0;
 		let localNoteCount = 0;
 		let localRefCount = 0;
+		let localLoreCount = 0;
 		try {
-			const loadedChapterIds = getLastLoadedChapterIds();
-			const loadedNoteIds = getLastLoadedNoteIds();
-			const loadedRefIds = getLastLoadedRefIds();
-			localChapterCount = Array.isArray(loadedChapterIds) ? loadedChapterIds.length : 0;
-			localNoteCount = Array.isArray(loadedNoteIds) ? loadedNoteIds.length : 0;
-			localRefCount = Array.isArray(loadedRefIds) ? loadedRefIds.length : 0;
-			appendDebugLog(`db.upload: loaded entries for project ${projectPath}: chapters=${localChapterCount} notes=${localNoteCount} refs=${localRefCount}`);
+		const loadedChapterIds = getLastLoadedChapterIds();
+		const loadedNoteIds = getLastLoadedNoteIds();
+		const loadedRefIds = getLastLoadedRefIds();
+		const loadedLoreIds = getLastLoadedLoreIds();
+		localChapterCount = Array.isArray(loadedChapterIds) ? loadedChapterIds.length : 0;
+		localNoteCount = Array.isArray(loadedNoteIds) ? loadedNoteIds.length : 0;
+		localRefCount = Array.isArray(loadedRefIds) ? loadedRefIds.length : 0;
+		const localLoreCount = Array.isArray(loadedLoreIds) ? loadedLoreIds.length : 0;
+		appendDebugLog(`db.upload: loaded entries for project ${projectPath}: chapters=${localChapterCount} notes=${localNoteCount} refs=${localRefCount} lore=${localLoreCount}`);
 		} catch (err) {
 			// ignore logging failures
 		}
@@ -399,9 +405,141 @@ export async function uploadLocalProjects(rootDir: string, options?: { performUp
 		appendDebugLog(`db.upload: failed iterating refs for project ${projectPath}: ${(err as Error).message}`);
 	  }
 
+		// Iterate lore one-at-a-time using getNextLore()
+		try {
+				// Log how many lore rows we expect to process (best-effort)
+				try {
+					const loadedLoreIds = getLastLoadedLoreIds();
+					appendDebugLog(`db.upload: iterating lore via getNextLore() for project ${projectPath}; expected=${Array.isArray(loadedLoreIds)?loadedLoreIds.length:0}`);
+				} catch (e) {
+					appendDebugLog(`db.upload: iterating lore via getNextLore() for project ${projectPath}`);
+				}
+			while (true) {
+				const l = (global as any).getNextLore ? (global as any).getNextLore() : null;
+				// Prefer local module import when available
+				// If getNextLore was imported from db.format it will exist in scope
+				const loreRow = (typeof getNextLore === 'function') ? getNextLore() : l;
+				if (!loreRow) break;
+				const idVal = loreRow?.id ?? loreRow?.['id'] ?? null;
+				if (!idVal) continue;
+				try {
+					appendDebugLog(`db.upload: lore check params for id=${idVal}`);
+					const existing = await getColumnValue('lore', 'id', 'id = $1', [idVal]);
+					appendDebugLog(`db.upload: getColumnValue(lore,id) returned ${existing ? 'FOUND' : 'NOT FOUND'} for param id=${idVal}`);
+					if (existing) {
+						appendDebugLog(`db.upload: lore exists id=${idVal}; will UPDATE (performUpload=${performUpload})`);
+						if (performUpload) {
+							const params = [
+								loreRow.title ?? null,
+								loreRow.content ?? null,
+								loreRow.summary ?? null,
+								loreRow.tags ?? [],
+								loreRow.lore_kind ?? null,
+								loreRow.entry1_name ?? null,
+								loreRow.entry1_content ?? null,
+								loreRow.entry2_name ?? null,
+								loreRow.entry2_content ?? null,
+								loreRow.entry3_name ?? null,
+								loreRow.entry3_content ?? null,
+								loreRow.entry4_name ?? null,
+								loreRow.entry4_content ?? null,
+								loreRow.updated_at ?? new Date().toISOString(),
+								idVal
+							];
+							appendDebugLog(`db.upload: UPDATE lore params=${JSON.stringify(params)}`);
+							try {
+								await pool.query(`UPDATE lore SET title = $1, content = $2, summary = $3, tags = $4, lore_kind = $5, entry1_name = $6, entry1_content = $7, entry2_name = $8, entry2_content = $9, entry3_name = $10, entry3_content = $11, entry4_name = $12, entry4_content = $13, updated_at = $14 WHERE id = $15`, params);
+								summary.lore.updated += 1;
+							} catch (err) {
+								appendDebugLog(`db.upload: failed to update lore id=${idVal}: ${(err as Error).message}`);
+								summary.lore.errors += 1;
+							}
+						}
+					} else {
+						appendDebugLog(`db.upload: lore id=${idVal} not found; checking by id-string (performUpload=${performUpload})`);
+						try {
+							const existingById = loreRow?.id ? await getFirstRow('lore', 'CAST(id AS text) = $1', [loreRow.id]) : null;
+							if (existingById) {
+								appendDebugLog(`db.upload: lore id-string match found for local id=${loreRow.id}; will UPDATE row id=${existingById.id} (performUpload=${performUpload})`);
+								if (performUpload) {
+									const params = [
+										loreRow.title ?? null,
+										loreRow.content ?? null,
+										loreRow.summary ?? null,
+										loreRow.tags ?? [],
+										loreRow.lore_kind ?? null,
+										loreRow.entry1_name ?? null,
+										loreRow.entry1_content ?? null,
+										loreRow.entry2_name ?? null,
+										loreRow.entry2_content ?? null,
+										loreRow.entry3_name ?? null,
+										loreRow.entry3_content ?? null,
+										loreRow.entry4_name ?? null,
+										loreRow.entry4_content ?? null,
+										loreRow.updated_at ?? new Date().toISOString(),
+										existingById.id
+									];
+									appendDebugLog(`db.upload: UPDATE lore (by id-string) params=${JSON.stringify(params)}`);
+									try {
+										await pool.query(`UPDATE lore SET title = $1, content = $2, summary = $3, tags = $4, lore_kind = $5, entry1_name = $6, entry1_content = $7, entry2_name = $8, entry2_content = $9, entry3_name = $10, entry3_content = $11, entry4_name = $12, entry4_content = $13, updated_at = $14 WHERE id = $15`, params);
+										summary.lore.updated += 1;
+									} catch (err) {
+										appendDebugLog(`db.upload: failed to update lore (by id) id=${existingById.id}: ${(err as Error).message}`);
+										summary.lore.errors += 1;
+									}
+								}
+							} else {
+								appendDebugLog(`db.upload: lore id=${idVal} not found by id-string; will INSERT (performUpload=${performUpload})`);
+								if (performUpload) {
+									const params = [
+										loreRow.id ?? null,
+										loreRow.code ?? null,
+										loreRow.project_id ?? null,
+										effectiveCreatorId,
+										loreRow.number ?? null,
+										loreRow.title ?? null,
+										loreRow.content ?? null,
+										loreRow.summary ?? null,
+										loreRow.tags ?? [],
+										loreRow.lore_kind ?? null,
+										loreRow.entry1_name ?? null,
+										loreRow.entry1_content ?? null,
+										loreRow.entry2_name ?? null,
+										loreRow.entry2_content ?? null,
+										loreRow.entry3_name ?? null,
+										loreRow.entry3_content ?? null,
+										loreRow.entry4_name ?? null,
+										loreRow.entry4_content ?? null,
+										loreRow.created_at ?? new Date().toISOString(),
+										loreRow.updated_at ?? new Date().toISOString()
+									];
+									appendDebugLog(`db.upload: INSERT lore params=${JSON.stringify(params)}`);
+									try {
+										await pool.query(`INSERT INTO lore (id, code, project_id, creator_id, number, title, content, summary, tags, lore_kind, entry1_name, entry1_content, entry2_name, entry2_content, entry3_name, entry3_content, entry4_name, entry4_content, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`, params);
+										appendDebugLog(`db.upload: inserted lore id=${idVal}`);
+										summary.lore.inserted += 1;
+									} catch (err) {
+										appendDebugLog(`db.upload: failed to insert lore id=${idVal}: ${(err as Error).message}`);
+										summary.lore.errors += 1;
+										if (String((err as Error).message).toLowerCase().includes('duplicate')) summary.conflicts += 1;
+									}
+								}
+							}
+						} catch (err) {
+							appendDebugLog(`db.upload: error checking lore by id for id=${idVal}: ${(err as Error).message}`);
+						}
+					}
+				} catch (err) {
+					appendDebugLog(`db.upload: error handling lore id=${idVal} for project ${projectPath}: ${(err as Error).message}`);
+				}
+			}
+		} catch (err) {
+			appendDebugLog(`db.upload: failed iterating lore for project ${projectPath}: ${(err as Error).message}`);
+		}
+
 			// Debug: finished processing this project — report loaded counts and running totals
 			try {
-				appendDebugLog(`db.upload: finished project ${projectPath}; localLoaded chapters=${localChapterCount} notes=${localNoteCount} refs=${localRefCount}; runningTotals projects(inserted=${summary.projects.inserted},updated=${summary.projects.updated},deleted=${summary.projects.deleted}) chapters(inserted=${summary.chapters.inserted},updated=${summary.chapters.updated}) notes(inserted=${summary.notes.inserted},updated=${summary.notes.updated}) refs(inserted=${summary.refs.inserted},updated=${summary.refs.updated}) conflicts=${summary.conflicts} errors(projects=${summary.projects.errors},chapters=${summary.chapters.errors},notes=${summary.notes.errors},refs=${summary.refs.errors})`);
+				appendDebugLog(`db.upload: finished project ${projectPath}; localLoaded chapters=${localChapterCount} notes=${localNoteCount} refs=${localRefCount} lore=${localLoreCount ?? 0}; runningTotals projects(inserted=${summary.projects.inserted},updated=${summary.projects.updated},deleted=${summary.projects.deleted}) chapters(inserted=${summary.chapters.inserted},updated=${summary.chapters.updated}) notes(inserted=${summary.notes.inserted},updated=${summary.notes.updated}) refs(inserted=${summary.refs.inserted},updated=${summary.refs.updated}) lore(inserted=${summary.lore.inserted},updated=${summary.lore.updated}) conflicts=${summary.conflicts} errors(projects=${summary.projects.errors},chapters=${summary.chapters.errors},notes=${summary.notes.errors},refs=${summary.refs.errors},lore=${summary.lore.errors})`);
 			} catch (err) {
 				// ignore logging failures
 			}
@@ -414,11 +552,13 @@ export async function uploadLocalProjects(rootDir: string, options?: { performUp
 						const qCh = await pool.query(`SELECT COUNT(*) AS c FROM chapters WHERE project_id = $1`, [projectIdForQuery]);
 						const qNo = await pool.query(`SELECT COUNT(*) AS c FROM notes WHERE project_id = $1`, [projectIdForQuery]);
 						const qRf = await pool.query(`SELECT COUNT(*) AS c FROM refs WHERE project_id = $1`, [projectIdForQuery]);
+						const qLo = await pool.query(`SELECT COUNT(*) AS c FROM lore WHERE project_id = $1`, [projectIdForQuery]);
 						const dbCh = Number(qCh.rows?.[0]?.c ?? 0);
 						const dbNo = Number(qNo.rows?.[0]?.c ?? 0);
 						const dbRf = Number(qRf.rows?.[0]?.c ?? 0);
-						appendDebugLog(`db.upload: verification for project ${projectPath} (id=${projectIdForQuery}): local chapters=${localChapterCount} db chapters=${dbCh}; local notes=${localNoteCount} db notes=${dbNo}; local refs=${localRefCount} db refs=${dbRf}`);
-						if (dbCh !== localChapterCount || dbNo !== localNoteCount || dbRf !== localRefCount) {
+						const dbLo = Number(qLo.rows?.[0]?.c ?? 0);
+						appendDebugLog(`db.upload: verification for project ${projectPath} (id=${projectIdForQuery}): local chapters=${localChapterCount} db chapters=${dbCh}; local notes=${localNoteCount} db notes=${dbNo}; local refs=${localRefCount} db refs=${dbRf}; local lore=${localLoreCount ?? 0} db lore=${dbLo}`);
+						if (dbCh !== localChapterCount || dbNo !== localNoteCount || dbRf !== localRefCount || dbLo !== (localLoreCount ?? 0)) {
 							appendDebugLog(`db.upload: VERIFICATION MISMATCH for project ${projectPath} (id=${projectIdForQuery}).`);
 							summary.conflicts += 1;
 						}
