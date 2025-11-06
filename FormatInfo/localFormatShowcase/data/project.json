@@ -31,6 +31,14 @@
       "title": "Reference 1",
       "order_index": 0,
       "updated_at": "2025-10-31T20:13:16.412Z"
+    },
+    {
+      "id": 1,
+      "code": "LOR-0001-000001",
+      "type": "lore",
+      "title": "Lore 1",
+      "order_index": 0,
+      "updated_at": "2025-10-31T20:13:16.412Z"
     }
   ]
 }

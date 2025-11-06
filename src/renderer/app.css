@@ -419,6 +419,21 @@ body.theme-slate .body {
   letter-spacing: 0.06em;
 }
 
+/* Lore custom fields: pair layout and small name input styling */
+.lore-custom-fields .pair {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.small-name-input {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--fg);
+  font-size: 14px;
+}
+
 .synopsis {
   min-height: 120px;
   padding: 10px;

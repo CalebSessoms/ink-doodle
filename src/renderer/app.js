@@ -10,6 +10,29 @@ const fs = require('fs');
 const path = require('path');
 const { ipcRenderer } = require('electron');
 
+// DEV: verification marker — helps confirm which app.js the renderer actually loaded.
+// This prints a distinct tag to the console and into the debug logger (if wired).
+try {
+  const scriptEl = (typeof document !== 'undefined') ? document.querySelector('script[src$="src/renderer/app.js"]') : null;
+  const scriptSrc = scriptEl ? scriptEl.src : (typeof document !== 'undefined' && document.currentScript ? document.currentScript.src : null);
+  console.log('[dev-mark] app.js loaded; scriptSrc=', scriptSrc || window.location.href);
+  try { dbg && dbg(`[dev-mark] app.js loaded from ${scriptSrc || window.location.href}`); } catch (e) { /* best-effort */ }
+
+  // Also try a local disk check to show whether the workspace copy exists where we expect it.
+  try {
+    const diskPath = path.join(process.cwd(), 'src', 'renderer', 'app.js');
+    const exists = fs.existsSync(diskPath);
+    try { dbg && dbg(`[dev-mark] diskExists=${exists} path=${diskPath}`); } catch (e) {}
+    if (exists) {
+      try {
+        const snippet = fs.readFileSync(diskPath, 'utf8').slice(0, 256).replace(/\n/g, ' ');
+        const hasLore = snippet.indexOf('Lore Editor') !== -1 || snippet.indexOf('lore-editor') !== -1;
+        try { dbg && dbg(`[dev-mark] diskSnippetHasLore=${hasLore}`); } catch (e) {}
+      } catch (e) { try { dbg && dbg('[dev-mark] read disk snippet failed: ' + (e && e.message)); } catch (__) {} }
+    }
+  } catch (e) { try { dbg && dbg('[dev-mark] disk probe failed: ' + (e && e.message)); } catch (__) {} }
+} catch (e) { try { console.log('[dev-mark] setup failed', e && e.message); } catch (__) {} }
+
 // ───────────────── Debug helpers ─────────────────
 let LOG_FILE = null;
 const _dbgBuf = [];                // buffer while we don't know workspace
@@ -115,7 +138,8 @@ async function _wireDebugLogPathEarly() {
     activeTab: "chapters", // "chapters" | "notes" | "references"
     entries: [],           // { id, type, title, ... }
     selectedId: null,
-    counters: { chapter: 1, note: 1, reference: 1 },
+  // counters: chapters, notes, references, and unified lore entries
+  counters: { chapter: 1, note: 1, reference: 1, lore: 1 },
 
     // Logged-in creator info ─────────────
     authUser: null,  // { id, code, email, name } or null
@@ -144,8 +168,7 @@ async function _wireDebugLogPathEarly() {
       bgBlur: 2,           // px (0..8)
       editorDim: false,    // dim editor panel for readability
     },
-    // Lore UI
-    loreSubtab: 'characters', // 'characters' | 'locations' | 'timelines' | 'items'
+  // Lore UI (unified lore type — no subtabs)
   };
 
   // Will be set after we know workspacePath:
@@ -629,10 +652,22 @@ async function _wireDebugLogPathEarly() {
     loreEditor: $("#lore-editor"),
     loreSwitchBtn: $("#switch-to-lore-btn"),
     loreBackBtn: $("#lore-back-btn"),
-    loreBody: $("#lore-body"),
-    tabsWriting: document.querySelector('.tabs-writing'),
-    tabsLore: document.querySelector('.tabs-lore'),
-    loreSubtabs: document.querySelectorAll('.tabs-lore .lore-subtab'),
+  loreBody: $("#lore-body"),
+  loreKind: $("#lore-kind-input"),
+  loreTitle: $("#lore-title-input"),
+  loreTags: $("#lore-tags"),
+  loreSummary: $("#lore-summary"),
+  // Custom paired fields (entryNname / entryNcontent)
+  entry1name: $("#entry1name"),
+  entry1content: $("#entry1content"),
+  entry2name: $("#entry2name"),
+  entry2content: $("#entry2content"),
+  entry3name: $("#entry3name"),
+  entry3content: $("#entry3content"),
+  entry4name: $("#entry4name"),
+  entry4content: $("#entry4content"),
+  tabsWriting: document.querySelector('.tabs-writing'),
+  tabsLore: document.querySelector('.tabs-lore'),
   };
 
   // Top-level document capture handler as a safety net: handle clicks on
@@ -662,7 +697,7 @@ async function _wireDebugLogPathEarly() {
   const uid = () => Math.random().toString(36).slice(2, 10);
   const capFirst = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
   const tabTypeMap = { chapters: "chapter", notes: "note", references: "reference" };
-  const typeTabMap = { chapter: "chapters", note: "notes", reference: "references" };
+  const typeTabMap = { chapter: "chapters", note: "notes", reference: "references", lore: "lore" };
 
   // Map lore subtabs -> entry types (future entries should use these types)
   const loreTypeMap = { characters: 'character', locations: 'location', timelines: 'timeline', items: 'item' };
@@ -703,16 +738,20 @@ async function _wireDebugLogPathEarly() {
   const label =
     type === "chapter" ? `Untitled Chapter ${nextNum}` :
     type === "note"    ? `Untitled Note ${nextNum}` :
-                         `Untitled Reference ${nextNum}`;
+    type === "reference" ? `Untitled Reference ${nextNum}` :
+    type === "lore" ? `Untitled Lore ${nextNum}` :
+                         `Untitled Entry ${nextNum}`;
   return label;
   }
 
   function visibleEntries() {
-    dbg(`visibleEntries -> activeTab=${state.activeTab} loreSubtab=${state.loreSubtab}`);
+    dbg(`visibleEntries -> activeTab=${state.activeTab}`);
     if (state.activeTab === 'lore') {
-      const loreType = loreTypeMap[state.loreSubtab] || 'character';
-      const list = state.entries.filter(e => e.type === loreType).sort((a,b)=>a.order_index - b.order_index);
-      dbg(`visibleEntries -> filtering lore type=${loreType} matched=${list.length}`);
+      // Show all unified lore entries
+      const list = state.entries
+        .filter(e => e.type === 'lore')
+        .sort((a,b)=>a.order_index - b.order_index);
+      dbg(`visibleEntries -> filtering lore (unified) matched=${list.length}`);
       return list;
     }
     const t = tabTypeMap[state.activeTab];
@@ -1472,26 +1511,32 @@ function saveUIPrefsDebounced() {
 
   dbg(`renderList — rendering ${list.length} visible entries (activeTab=${state.activeTab} selected=${state.selectedId})`);
   list.forEach((e, idx) => {
-      const li = document.createElement("li");
-  li.className = "entry" + (entryKey(e) === state.selectedId ? " selected" : "");
-      li.dataset.id = e.id;
-      li.dataset.type = e.type;
-      li.draggable = true;
+    const li = document.createElement("li");
+    li.className = "entry" + (entryKey(e) === state.selectedId ? " selected" : "");
+    li.dataset.id = e.id;
+    li.dataset.type = e.type;
+    li.draggable = true;
 
-      const t = document.createElement("span");
-      t.className = "title";
-      t.textContent = e.title || "(Untitled)";
+    // Badge (show lore_kind for lore entries, otherwise show type)
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    badge.textContent = e.type === 'lore' ? (e.lore_kind || 'lore') : e.type;
 
-      const m = document.createElement("span");
-      m.className = "meta";
-      m.textContent = metaText(e);
+    const t = document.createElement("span");
+    t.className = "title";
+    t.textContent = e.title || "(Untitled)";
 
-      const spacer = document.createElement("span"); // keeps delete on far right
-      spacer.className = "spacer";
+    const m = document.createElement("span");
+    m.className = "meta";
+    m.textContent = metaText(e);
 
-      li.appendChild(t);
-      li.appendChild(m);
-      li.appendChild(spacer);
+    const spacer = document.createElement("span"); // keeps delete on far right
+    spacer.className = "spacer";
+
+    li.appendChild(badge);
+    li.appendChild(t);
+    li.appendChild(m);
+    li.appendChild(spacer);
 
       // Click-to-select
       li.addEventListener("click", () => {
@@ -1542,12 +1587,21 @@ function saveUIPrefsDebounced() {
 
       el.entryList.appendChild(li);
     });
-
-    if (!state.selectedId && list.length > 0) {
-      state.selectedId = entryKey(list[0]);
-      dbg(`renderList — no selection; defaulting to ${state.selectedId}`);
-      populateEditor(list[0]);
-    }
+      // If there are no visible entries, and we're in Lore mode, show a helpful
+      // empty placeholder with a quick +New button for the current lore subtab.
+      if (list.length === 0) {
+        // No entries visible. Clear selection and editor. Do not render an
+        // inline quick-create here — the main +New button is the canonical
+        // place to create entries.
+        state.selectedId = null;
+        clearEditor();
+      } else {
+        if (!state.selectedId && list.length > 0) {
+          state.selectedId = entryKey(list[0]);
+          dbg(`renderList — no selection; defaulting to ${state.selectedId}`);
+          populateEditor(list[0]);
+        }
+      }
     updateWordCount();
   }
 
@@ -1653,6 +1707,21 @@ function saveUIPrefsDebounced() {
     if (el.goalProgress) el.goalProgress.style.display = "none";
 
     updateWordCount();
+    // Clear lore-specific fields
+    if (el.loreTitle) el.loreTitle.value = "";
+    if (el.loreKind) el.loreKind.value = "";
+    if (el.loreTags) el.loreTags.value = "";
+    if (el.loreSummary) el.loreSummary.value = "";
+    if (el.loreBody) el.loreBody.value = "";
+    // Clear custom paired fields
+    if (el.entry1name) el.entry1name.value = "";
+    if (el.entry1content) el.entry1content.value = "";
+    if (el.entry2name) el.entry2name.value = "";
+    if (el.entry2content) el.entry2content.value = "";
+    if (el.entry3name) el.entry3name.value = "";
+    if (el.entry3content) el.entry3content.value = "";
+    if (el.entry4name) el.entry4name.value = "";
+    if (el.entry4content) el.entry4content.value = "";
   }
 
   function selectEntry(idOrKey) {
@@ -1722,17 +1791,35 @@ function saveUIPrefsDebounced() {
       if (el.sourceLink) el.sourceLink.value = entry.source_link || "";
       if (el.body) el.body.value = entry.body || "";
     }
-    else if (['character','location','timeline','item'].includes(entry.type)) {
-      // Lore entries: use tags + body, hide chapter-only controls
-      hide(el.statusWrapper); show(el.tagsWrapper); hide(el.synopsisLabel); hide(el.synopsis);
+    else if (entry.type === 'lore') {
+      // Unified lore entries: populate the Lore editor fields and hide chapter-only controls
+      hide(el.statusWrapper); hide(el.synopsisLabel); hide(el.synopsis);
       hide(el.noteCategoryWrapper); hide(el.notePinWrapper);
       hide(el.referenceTypeWrapper); hide(el.sourceLinkLabel); hide(el.sourceLink);
-      if (el.tags) el.tags.value = (entry.tags || []).join(', ');
-      if (el.body) el.body.value = entry.body || '';
-      if (el.titleInput) el.titleInput.value = entry.title || '';
-      // No word goals
+
+      // Populate lore-specific editor (in the dedicated lore pane)
+  if (el.loreTitle) el.loreTitle.value = entry.title || '';
+  if (el.loreKind) { el.loreKind.classList.remove('hidden'); el.loreKind.value = entry.lore_kind || ''; }
+  if (el.loreTags) el.loreTags.value = (entry.tags || []).join(', ');
+  if (el.loreSummary) el.loreSummary.value = entry.summary || '';
+  if (el.loreBody) el.loreBody.value = entry.body || '';
+
+  // Populate custom paired fields if present on the entry
+  if (el.entry1name) el.entry1name.value = entry.entry1name || '';
+  if (el.entry1content) el.entry1content.value = entry.entry1content || '';
+  if (el.entry2name) el.entry2name.value = entry.entry2name || '';
+  if (el.entry2content) el.entry2content.value = entry.entry2content || '';
+  if (el.entry3name) el.entry3name.value = entry.entry3name || '';
+  if (el.entry3content) el.entry3content.value = entry.entry3content || '';
+  if (el.entry4name) el.entry4name.value = entry.entry4name || '';
+  if (el.entry4content) el.entry4content.value = entry.entry4content || '';
+
+      // Ensure story editor hidden when lore is active (switchTab handles pane visibility)
       if (el.goalWrap) el.goalWrap.style.display = 'none';
       if (el.goalProgress) el.goalProgress.style.display = 'none';
+    } else {
+      // ensure lore kind input hidden for non-lore entries
+      if (el.loreKind) el.loreKind.classList.add('hidden');
     }
 
     el.saveState && (el.saveState.textContent = "Autosaved");
@@ -1740,7 +1827,8 @@ function saveUIPrefsDebounced() {
   }
 
   // ───────────────── Create ─────────────────
-  function createEntry(kind) {
+  function createEntry(kind, opts) {
+    opts = opts || {};
     const type = kind;
     const order_index = state.entries.filter(e => e.type === type).length;
     
@@ -1753,6 +1841,7 @@ function saveUIPrefsDebounced() {
     const pad = (n) => String(n).padStart(6, '0');
     const parentPad = String(projectId).padStart(4, '0');
   const typeCode = type === 'chapter' ? 'CHP' : type === 'note' ? 'NT' : type === 'reference' ? 'RF' :
+           type === 'lore' ? 'LOR' :
            type === 'character' ? 'CHR' : type === 'location' ? 'LOC' : type === 'timeline' ? 'TML' :
            type === 'item' ? 'ITM' : 'RF';
 
@@ -1778,8 +1867,9 @@ function saveUIPrefsDebounced() {
       creator_id: state.authUser?.id || state.project?.creator_id || undefined,
       type,
       title: type === "chapter" ? `Chapter ${seq}` :
-             type === "note" ? `Note ${seq}` :
-             `Reference ${seq}`,
+        type === "note" ? `Note ${seq}` :
+        type === "lore" ? defaultUntitled('lore') :
+        `Reference ${seq}`,
       updated_at: nowISO(),
       created_at: nowISO(),
       order_index,
@@ -1804,12 +1894,22 @@ function saveUIPrefsDebounced() {
       entry.summary = "";
       entry.source_link = "";
       dbg(`reference:create — Creating new reference "${entry.title}" with ID ${entry.id}`);
-    } else if (['character','location','timeline','item'].includes(type)) {
-      // Lore types: basic fields
+    } else if (type === 'lore') {
+      // Unified lore entries: freeform subtype stored in `lore_kind`
+      entry.lore_kind = opts.lore_kind || '';
       entry.summary = "";
       entry.body = "";
       entry.tags = [];
-      dbg(`lore:create — Creating new ${type} "${entry.title}" with ID ${entry.id}`);
+      // Initialize four custom paired fields (name + content)
+      entry.entry1name = '';
+      entry.entry1content = '';
+      entry.entry2name = '';
+      entry.entry2content = '';
+      entry.entry3name = '';
+      entry.entry3content = '';
+      entry.entry4name = '';
+      entry.entry4content = '';
+      dbg(`lore:create — Creating new lore entry "${entry.title}" with ID ${entry.id}`);
     }
 
   // Add to state.entries with proper project code if available
@@ -1817,9 +1917,9 @@ function saveUIPrefsDebounced() {
     state.entries.push(entry);
     
     // Switch to correct tab if needed
-    const target = typeTabMap[type];
+    const target = typeTabMap[entry.type];
     if (state.activeTab !== target) {
-      dbg(`Tab switch needed for new ${type}: ${state.activeTab} -> ${target}`);
+      dbg(`Tab switch needed for new ${entry.type}: ${state.activeTab} -> ${target}`);
       switchTab(target);
     }
     
@@ -1835,9 +1935,10 @@ function saveUIPrefsDebounced() {
     
     // Focus the title input after a short delay to ensure the editor is ready
     setTimeout(() => {
-      if (el.titleInput) {
-        el.titleInput.focus();
-        el.titleInput.select();
+      if (type === 'lore' && el.loreTitle) {
+        try { el.loreTitle.focus(); el.loreTitle.select(); } catch (e) {}
+      } else if (el.titleInput) {
+        try { el.titleInput.focus(); el.titleInput.select(); } catch (e) {}
       }
     }, 50);
 
@@ -1860,13 +1961,9 @@ function saveUIPrefsDebounced() {
 
     // If switching to lore, show lore subtabs; otherwise show writing tabs
     if (tabName === 'lore') {
+      // Hide writing tabs and show unified lore mode (no subtabs)
       if (el.tabsWriting) el.tabsWriting.classList.add('hidden');
-      if (el.tabsLore) { el.tabsLore.classList.remove('hidden'); el.tabsLore.setAttribute('aria-hidden','false'); }
-      // ensure a lore subtab is marked active
-      el.loreSubtabs?.forEach(btn => {
-        const active = btn.dataset.lore === state.loreSubtab;
-        btn.classList.toggle('active', active);
-      });
+      if (el.tabsLore) { el.tabsLore.classList.add('hidden'); el.tabsLore.setAttribute('aria-hidden','true'); }
     } else {
       if (el.tabsWriting) el.tabsWriting.classList.remove('hidden');
       if (el.tabsLore) { el.tabsLore.classList.add('hidden'); el.tabsLore.setAttribute('aria-hidden','true'); }
@@ -1892,17 +1989,10 @@ function saveUIPrefsDebounced() {
     } catch (e) { dbg(`switchTab -> editor sync failed: ${e?.message || e}`); }
 
   renderList();
-  dbg(`switched tab -> ${tabName}; tabsWriting=${!!el.tabsWriting} tabsLore=${!!el.tabsLore} loreSubtab=${state.loreSubtab}`);
+  dbg(`switched tab -> ${tabName}; tabsWriting=${!!el.tabsWriting} tabsLore=${!!el.tabsLore}`);
   }
 
-  function switchLoreSubtab(name) {
-    if (!name) return;
-    state.loreSubtab = name;
-    // update subtab active styles
-    el.loreSubtabs?.forEach(btn => btn.classList.toggle('active', btn.dataset.lore === name));
-    dbg(`switched lore subtab -> ${name}`);
-    renderList();
-  }
+  // Note: per-subtab switching removed — lore is unified.
 
   // ───────────────── Lore Editor toggles ─────────────────
   function switchToLore() {
@@ -2116,7 +2206,8 @@ function saveUIPrefsDebounced() {
             return {
               chapters: data.chapters,
               notes: data.notes,
-              refs: data.refs
+              refs: data.refs,
+              lore: data.lore || { added: [], updated: [], deleted: [] }
             };
           }
         }
@@ -2128,7 +2219,8 @@ function saveUIPrefsDebounced() {
     return {
       chapters: { added: [], updated: [], deleted: [] },
       notes: { added: [], updated: [], deleted: [] },
-      refs: { added: [], updated: [], deleted: [] }
+      refs: { added: [], updated: [], deleted: [] },
+      lore: { added: [], updated: [], deleted: [] }
     };
   }
 
@@ -2166,7 +2258,7 @@ function saveUIPrefsDebounced() {
         }
         
         // Create base directories at project root
-        ['chapters', 'notes', 'refs'].forEach(dir => {
+        ['chapters', 'notes', 'refs', 'lore'].forEach(dir => {
           const fullPath = path.join(projectRootDir, dir);
           if (!fs.existsSync(fullPath)) {
             fs.mkdirSync(fullPath, { recursive: true });
@@ -2198,7 +2290,7 @@ function saveUIPrefsDebounced() {
       const type = entry.type === 'chapter' ? 'chapters' : 
             entry.type === 'note' ? 'notes' : 
             entry.type === 'reference' ? 'refs' :
-            (['character','location','timeline','item'].includes(entry.type) ? 'lore' : 'refs');
+            (entry.type === 'lore' ? 'lore' : 'refs');
                     
         // Track the project code if it exists
         if (data.project && data.project.code) {
@@ -2226,13 +2318,15 @@ function saveUIPrefsDebounced() {
       
     // Handle new and updated entries
     // Track files we write so we can remove orphan files left on disk
-    const writtenFilesByType = { chapters: new Set(), notes: new Set(), refs: new Set() };
-    for (const entry of state.entries) {
-        const type = entry.type === 'chapter' ? 'chapters' : 
-                    entry.type === 'note' ? 'notes' : 'refs';
+    const writtenFilesByType = { chapters: new Set(), notes: new Set(), refs: new Set(), lore: new Set() };
+  for (const entry of state.entries) {
+    const type = entry.type === 'chapter' ? 'chapters' : 
+          entry.type === 'note' ? 'notes' : 
+          entry.type === 'reference' ? 'refs' :
+          entry.type === 'lore' ? 'lore' : 'refs';
                     
         // Create type directory if it doesn't exist
-        const typeDir = path.join(projectRootDir, type);
+          const typeDir = path.join(projectRootDir, type);
         if (!fs.existsSync(typeDir)) {
           fs.mkdirSync(typeDir, { recursive: true });
         }
@@ -2266,7 +2360,7 @@ function saveUIPrefsDebounced() {
             filename = matched;
             dbg(`workspace:save — reusing existing filename ${type}/${filename} for entry id=${entry.id} code=${entry.code}`);
           } else {
-            const prefix = entry.type === 'chapter' ? 'CH' : entry.type === 'note' ? 'NT' : 'RF';
+            const prefix = entry.type === 'chapter' ? 'CH' : entry.type === 'note' ? 'NT' : entry.type === 'reference' ? 'RF' : entry.type === 'lore' ? 'LOR' : 'RF';
             // Try to extract numeric id from entry.id
             let idNum = null;
             if (typeof entry.id === 'number') idNum = entry.id;
@@ -2299,7 +2393,8 @@ function saveUIPrefsDebounced() {
             // Note: intentionally omit `order_index` from per-item files — it belongs in data/project.json only
             chapter: ['id','code','project_id','creator_id','title','content','body','status','summary','synopsis','tags','created_at','updated_at','word_goal'],
             note: ['id','code','project_id','creator_id','title','content','body','tags','category','pinned','created_at','updated_at'],
-            reference: ['id','code','project_id','creator_id','title','content','body','tags','reference_type','summary','source_link','created_at','updated_at']
+            reference: ['id','code','project_id','creator_id','title','content','body','tags','reference_type','summary','source_link','created_at','updated_at'],
+            lore: ['id','code','project_id','creator_id','title','content','body','summary','tags','lore_kind','entry1name','entry1content','entry2name','entry2content','entry3name','entry3content','entry4name','entry4content','created_at','updated_at']
           };
 
           const allow = allowedByType[type] || allowedByType.chapter;
@@ -2349,7 +2444,71 @@ function saveUIPrefsDebounced() {
             if (view.source_link !== undefined) out.source_link = view.source_link;
           }
 
+          // Lore-specific writable fields
+          else if (type === 'lore') {
+            if (view.lore_kind !== undefined) out.lore_kind = view.lore_kind;
+            // map up to four custom paired fields
+            for (let i = 1; i <= 4; i++) {
+              const n = `entry${i}name`;
+              const c = `entry${i}content`;
+              if (view[n] !== undefined) out[n] = view[n];
+              if (view[c] !== undefined) out[c] = view[c];
+            }
+          }
+
           // Do not write order_index into per-item files; project-level ordering belongs in data/project.json
+          // Do not write order_index into per-item files; project-level ordering belongs in data/project.json
+
+          // For lore, we need to emit a legacy-shaped object matching the requested format.
+          if (type === 'lore') {
+            const loreOut = {};
+            // Basics and identification (preserve id/code if present)
+            if (view.id !== undefined) loreOut.id = view.id;
+            else if (raw.id !== undefined) loreOut.id = raw.id;
+            if (view.code !== undefined) loreOut.code = view.code;
+            else if (raw.code !== undefined) loreOut.code = raw.code;
+
+            // project_id and creator_id: prefer view -> raw -> runtime state
+            if (view.project_id !== undefined) loreOut.project_id = view.project_id;
+            else if (raw.project_id !== undefined) loreOut.project_id = raw.project_id;
+            else if (state && state.project && (state.project.id !== undefined || state.project.project_id !== undefined)) loreOut.project_id = state.project.id || state.project.project_id;
+
+            if (view.creator_id !== undefined) loreOut.creator_id = view.creator_id;
+            else if (raw.creator_id !== undefined) loreOut.creator_id = raw.creator_id;
+            else if (state && (state.authUser && (state.authUser.id !== undefined || state.authUser.user_id !== undefined))) loreOut.creator_id = state.authUser.id || state.authUser.user_id;
+
+            // Title
+            loreOut.title = (view.title !== undefined) ? view.title : (raw.title !== undefined ? raw.title : '');
+
+            // Use 'content' as the main short text field per requested format. Prefer raw.content, then view.body, then raw.body.
+            loreOut.content = (raw && Object.prototype.hasOwnProperty.call(raw,'content')) ? raw.content : ((view.body !== undefined) ? view.body : (raw.body !== undefined ? raw.body : ''));
+
+            // summary
+            loreOut.summary = (view.summary !== undefined) ? view.summary : (raw.summary !== undefined ? raw.summary : '');
+
+            // tags
+            loreOut.tags = Array.isArray(view.tags) ? view.tags.slice() : (Array.isArray(raw.tags) ? raw.tags.slice() : []);
+
+            // lore_type (legacy key name) prefer view.lore_kind -> raw.lore_kind -> raw.lore_type
+            loreOut.lore_type = (view.lore_kind !== undefined) ? view.lore_kind : (raw.lore_kind !== undefined ? raw.lore_kind : (raw.lore_type !== undefined ? raw.lore_type : ''));
+
+            // Map paired fields into 'Field N Name' / 'Field N Content'
+            for (let i = 1; i <= 4; i++) {
+              const nameField = `Field ${i} Name`;
+              const contentField = `Field ${i} Content`;
+              const vn = `entry${i}name`;
+              const vc = `entry${i}content`;
+              loreOut[nameField] = (view[vn] !== undefined) ? view[vn] : (raw[vn] !== undefined ? raw[vn] : (raw[nameField] !== undefined ? raw[nameField] : ''));
+              loreOut[contentField] = (view[vc] !== undefined) ? view[vc] : (raw[vc] !== undefined ? raw[vc] : (raw[contentField] !== undefined ? raw[contentField] : ''));
+            }
+
+            // timestamps
+            loreOut.created_at = view.created_at || raw.created_at || nowISO();
+            loreOut.updated_at = nowISO();
+
+            // Return the specially-shaped lore object
+            return loreOut;
+          }
 
           // Log any dropped keys for debugging (best-effort)
           try {
@@ -2373,7 +2532,7 @@ function saveUIPrefsDebounced() {
       // Only remove .json files inside the per-type folders. This ensures deleted
       // entries are removed from the actual project on save (not at delete-button time).
       try {
-        for (const t of ['chapters', 'notes', 'refs']) {
+        for (const t of ['chapters', 'notes', 'refs', 'lore']) {
           const dir = path.join(projectRootDir, t);
           if (!fs.existsSync(dir)) continue;
           const files = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
@@ -2497,7 +2656,7 @@ function saveUIPrefsDebounced() {
   const entryTypes = ['chapters', 'notes', 'refs', 'lore'];
   const entries = [];
   // per-type counters for debug reporting
-  const loadStats = { chapters: 0, notes: 0, refs: 0 };
+  const loadStats = { chapters: 0, notes: 0, refs: 0, lore: 0 };
         
         for (const type of entryTypes) {
           const typeDir = path.join(projectRootDir, type);
@@ -2508,8 +2667,26 @@ function saveUIPrefsDebounced() {
                 const entryPath = path.join(typeDir, file);
                 const raw = JSON.parse(fs.readFileSync(entryPath, 'utf8'));
 
+                // Backwards-compatibility mappings for legacy lore files
+                if (type === 'lore' && raw && typeof raw === 'object') {
+                  // map common legacy key names to canonical keys
+                  if (raw.lore_type && !raw.lore_kind) raw.lore_kind = raw.lore_type;
+                  if (raw.content !== undefined && raw.body === undefined) raw.body = raw.content;
+                  // Map example field names like "Field 1 Name" / "Field 1 Content"
+                  for (let i = 1; i <= 4; i++) {
+                    const nameKey = `Field ${i} Name`;
+                    const contentKey = `Field ${i} Content`;
+                    if (Object.prototype.hasOwnProperty.call(raw, nameKey) && !Object.prototype.hasOwnProperty.call(raw, `entry${i}name`)) {
+                      raw[`entry${i}name`] = raw[nameKey];
+                    }
+                    if (Object.prototype.hasOwnProperty.call(raw, contentKey) && !Object.prototype.hasOwnProperty.call(raw, `entry${i}content`)) {
+                      raw[`entry${i}content`] = raw[contentKey];
+                    }
+                  }
+                }
+
                 // Build a lightweight view for UI while preserving the original raw object and filename
-                const inferredType = type === 'chapters' ? 'chapter' : type === 'notes' ? 'note' : 'reference';
+                const inferredType = type === 'chapters' ? 'chapter' : type === 'notes' ? 'note' : type === 'refs' ? 'reference' : type === 'lore' ? 'lore' : 'reference';
                 const idFromRaw = (raw && raw.id !== undefined) ? (typeof raw.id === 'number' ? raw.id : Number(String(raw.id).match(/(\d+)/)?.[1])) : undefined;
                 const codeFromRaw = raw && raw.code ? String(raw.code) : null;
 
@@ -2580,13 +2757,14 @@ function saveUIPrefsDebounced() {
 
           // If entry has no code in raw, try to infer from filename (compact form CH1/NT1/RF1)
           if (!code && view.__filename) {
-            const m = view.__filename.match(/^(CH|NT|RF)(\d+)\.json$/i);
+            const m = view.__filename.match(/^(CH|NT|RF|LOR)(\d+)\.json$/i);
             if (m) {
               const prefix = m[1].toUpperCase();
               const n = parseInt(m[2], 10);
               if (prefix === 'CH') code = `CHP-${parentPad}-${pad(n)}`;
               else if (prefix === 'NT') code = `NT-${parentPad}-${pad(n)}`;
               else if (prefix === 'RF') code = `RF-${parentPad}-${pad(n)}`;
+              else if (prefix === 'LOR') code = `LOR-${parentPad}-${pad(n)}`;
             }
           }
 
@@ -2595,6 +2773,7 @@ function saveUIPrefsDebounced() {
             if (view.type === 'chapter') code = `CHP-${parentPad}-${pad(view.id)}`;
             else if (view.type === 'note') code = `NT-${parentPad}-${pad(view.id)}`;
             else if (view.type === 'reference') code = `RF-${parentPad}-${pad(view.id)}`;
+            else if (view.type === 'lore') code = `LOR-${parentPad}-${pad(view.id)}`;
           }
 
           // Use a logical key based on type+id (prefer id). This keeps entries identified by their on-disk id.
@@ -2628,7 +2807,8 @@ function saveUIPrefsDebounced() {
           const allowed = {
             chapter: ['id','code','project_id','creator_id','title','content','body','status','summary','synopsis','tags','created_at','updated_at','word_goal','order_index'],
             note: ['id','code','project_id','creator_id','title','content','body','tags','category','pinned','created_at','updated_at','order_index'],
-            reference: ['id','code','project_id','creator_id','title','content','body','tags','reference_type','summary','source_link','created_at','updated_at','order_index']
+            reference: ['id','code','project_id','creator_id','title','content','body','tags','reference_type','summary','source_link','created_at','updated_at','order_index'],
+            lore: ['id','code','project_id','creator_id','title','content','body','summary','tags','lore_kind','entry1name','entry1content','entry2name','entry2content','entry3name','entry3content','entry4name','entry4content','created_at','updated_at','order_index']
           };
           const allow = allowed[type] || [];
           const out = {};
@@ -2640,7 +2820,7 @@ function saveUIPrefsDebounced() {
         }
         for (const ent of data.entries) {
           try {
-            const typ = ent.type || (ent.__raw && ent.__raw.type) || (ent.code && (String(ent.code).startsWith('CHP') ? 'chapter' : String(ent.code).startsWith('NT') ? 'note' : String(ent.code).startsWith('RF') ? 'reference' : null));
+            const typ = ent.type || (ent.__raw && ent.__raw.type) || (ent.code && (String(ent.code).startsWith('CHP') ? 'chapter' : String(ent.code).startsWith('NT') ? 'note' : String(ent.code).startsWith('RF') ? 'reference' : String(ent.code).startsWith('LOR') ? 'lore' : null));
             if (ent.__raw && typeof ent.__raw === 'object') {
               ent.__raw = sanitizeRawForType(ent.__raw, typ);
             } else {
@@ -2656,7 +2836,7 @@ function saveUIPrefsDebounced() {
             delete ent.__raw.project;
           } catch (e) { /* best-effort */ }
         }
-        dbg(`workspace:load — entries loaded: chapters=${loadStats.chapters}, notes=${loadStats.notes}, refs=${loadStats.refs}; canonical entries=${data.entries.length}`);
+  dbg(`workspace:load — entries loaded: chapters=${loadStats.chapters}, notes=${loadStats.notes}, refs=${loadStats.refs}, lore=${loadStats.lore}; canonical entries=${data.entries.length}`);
 
         // NOTE: do not normalize or rewrite entry structure here; keep original per-file JSON shapes authoritative.
 
@@ -2899,10 +3079,15 @@ el.wordGoal?.addEventListener("input", () => {
   // Sidebar
   el.newBtn?.addEventListener("click", () => {
     let kind = null;
-    if (state.activeTab === 'lore') kind = loreTypeMap[state.loreSubtab] || 'character';
-    else kind = tabTypeMap[state.activeTab];
+    let opts = {};
+    if (state.activeTab === 'lore') {
+      // Create a unified lore entry; no prefilled category
+      kind = 'lore';
+    } else {
+      kind = tabTypeMap[state.activeTab];
+    }
     if (!kind) kind = 'chapter';
-    createEntry(kind);
+    createEntry(kind, opts);
   });
 
   // Hidden empty-state quick create (overlay unused)
@@ -2911,6 +3096,104 @@ el.wordGoal?.addEventListener("input", () => {
       const kind = btn.dataset.new;
       createEntry(kind);
     });
+  });
+
+  // Lore kind input: update current entry's lore_kind when edited
+  el.loreKind?.addEventListener('input', (ev) => {
+    try {
+      const cur = findEntryByKey(state.selectedId);
+      if (!cur || cur.type !== 'lore') return;
+      cur.lore_kind = (el.loreKind.value || '').trim();
+      touchSave();
+      renderList();
+    } catch (e) { dbg('loreKind input error: ' + (e && e.message)); }
+  });
+
+  // Lore title
+  el.loreTitle?.addEventListener('input', () => {
+    const e = findEntryByKey(state.selectedId);
+    if (!e || e.type !== 'lore') return;
+    e.title = el.loreTitle.value;
+    renderList();
+    touchSave();
+  });
+
+  // Lore tags (commit on blur)
+  el.loreTags?.addEventListener('blur', () => {
+    const e = findEntryByKey(state.selectedId);
+    if (!e || e.type !== 'lore') return;
+    e.tags = parseTags(el.loreTags.value);
+    touchSave();
+  });
+
+  // Lore summary
+  el.loreSummary?.addEventListener('input', () => {
+    const e = findEntryByKey(state.selectedId);
+    if (!e || e.type !== 'lore') return;
+    e.summary = el.loreSummary.value;
+    touchSave();
+  });
+
+  // Lore body
+  el.loreBody?.addEventListener('input', () => {
+    const e = findEntryByKey(state.selectedId);
+    if (!e || e.type !== 'lore') return;
+    e.body = el.loreBody.value;
+    updateWordCount();
+    touchSave();
+  });
+
+  // Custom paired fields: entry1..entry4 name + content
+  el.entry1name?.addEventListener('input', () => {
+    const e = findEntryByKey(state.selectedId);
+    if (!e || e.type !== 'lore') return;
+    e.entry1name = el.entry1name.value;
+    touchSave();
+  });
+  el.entry1content?.addEventListener('input', () => {
+    const e = findEntryByKey(state.selectedId);
+    if (!e || e.type !== 'lore') return;
+    e.entry1content = el.entry1content.value;
+    touchSave();
+  });
+
+  el.entry2name?.addEventListener('input', () => {
+    const e = findEntryByKey(state.selectedId);
+    if (!e || e.type !== 'lore') return;
+    e.entry2name = el.entry2name.value;
+    touchSave();
+  });
+  el.entry2content?.addEventListener('input', () => {
+    const e = findEntryByKey(state.selectedId);
+    if (!e || e.type !== 'lore') return;
+    e.entry2content = el.entry2content.value;
+    touchSave();
+  });
+
+  el.entry3name?.addEventListener('input', () => {
+    const e = findEntryByKey(state.selectedId);
+    if (!e || e.type !== 'lore') return;
+    e.entry3name = el.entry3name.value;
+    touchSave();
+  });
+  el.entry3content?.addEventListener('input', () => {
+    const e = findEntryByKey(state.selectedId);
+    if (!e || e.type !== 'lore') return;
+    e.entry3content = el.entry3content.value;
+    touchSave();
+  });
+
+  el.entry4name?.addEventListener('input', () => {
+    const e = findEntryByKey(state.selectedId);
+    if (!e || e.type !== 'lore') return;
+    e.entry4name = el.entry4name.value;
+    touchSave();
+  });
+  el.entry4content?.addEventListener('input', () => {
+    const e = findEntryByKey(state.selectedId);
+    if (!e || e.type !== 'lore') return;
+    e.entry4content = el.entry4content.value;
+    touchSave();
   });
 
   // Tabs (writing group) — rebind helpers to ensure handlers exist and are defensive
@@ -2942,13 +3225,7 @@ el.wordGoal?.addEventListener("input", () => {
   }
 
   // Lore subtabs wiring
-  el.loreSubtabs?.forEach(btn => {
-    btn.addEventListener('click', () => {
-      const name = btn.dataset.lore;
-      dbg(`loreSubtab click -> ${name}`);
-      switchLoreSubtab(name);
-    });
-  });
+  // No lore subtabs: lore is a unified entry type, so we do not bind per-subtab buttons.
 
 // Settings modal open/close
   function closeSettings() {

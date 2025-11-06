@@ -1,0 +1,21 @@
+{
+  "id": 1,
+  "code": "LOR-0001-000001",
+  "project_id": 1,
+  "creator_id": 1,
+  "title": "Lore 1",
+  "content": "",
+  "summary": "",
+  "tags": [],
+  "lore_type": "",
+  "Field 1 Name": "",
+  "Field 1 Content": "",
+  "Field 2 Name": "",
+  "Field 2 Content": "",
+  "Field 3 Name": "",
+  "Field 3 Content": "",
+  "Field 4 Name": "",
+  "Field 4 Content": "",
+  "created_at": "2025-10-31T20:13:16.412Z",
+  "updated_at": "2025-10-31T20:13:16.412Z"
+}

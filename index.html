@@ -36,12 +36,7 @@
             <button class="tab" data-tab="notes" role="tab" aria-selected="false" aria-controls="entry-list">Notes</button>
             <button class="tab" data-tab="references" role="tab" aria-selected="false" aria-controls="entry-list">References</button>
           </div>
-          <div class="tabs-lore hidden" aria-hidden="true">
-            <button class="tab lore-subtab active" data-lore="characters" type="button">Characters</button>
-            <button class="tab lore-subtab" data-lore="locations" type="button">Locations</button>
-            <button class="tab lore-subtab" data-lore="timelines" type="button">Timelines</button>
-            <button class="tab lore-subtab" data-lore="items" type="button">Items</button>
-          </div>
+          <!-- Lore uses a single unified entry type now; subtabs removed -->
         </div>
 
         <ul class="entry-list" id="entry-list" aria-label="Entries"></ul>
@@ -54,18 +49,18 @@
       <!-- Editor Pane -->
       <section class="editor" aria-label="Editor">
         <div class="editor-header">
-            <div class="title-row">
-                <input
-                    class="title-input"
-                    id="title-input"
-                    placeholder="Untitled"
-                    value=""
-                    spellcheck="false"
-                    aria-label="Title"
-                />
-                <button class="btn danger" id="editor-delete-btn" type="button" title="Delete entry">🗑 Delete</button>
+        <div class="title-row">
+            <input
+              class="title-input"
+              id="title-input"
+              placeholder="Untitled"
+              value=""
+              spellcheck="false"
+              aria-label="Title"
+            />
+            <button class="btn danger" id="editor-delete-btn" type="button" title="Delete entry">🗑 Delete</button>
         <button class="btn" id="switch-to-lore-btn" type="button" title="Switch to Lore Editor">🧭 Lore</button>
-            </div>
+          </div>
 
             <div class="meta-row">
             <!-- Chapters: Status -->
@@ -155,8 +150,44 @@
           </div>
         </div>
 
-        <label class="section-label" for="lore-body">Notes / Worldbuilding</label>
-        <textarea id="lore-body" class="body" placeholder="Write lore, characters, locations, timelines..." aria-label="Lore body"></textarea>
+        <div class="lore-form" style="display:flex; flex-direction:column; gap:8px; margin-top:12px;">
+          <input id="lore-title-input" class="title-input" placeholder="Untitled" aria-label="Lore title" spellcheck="false" />
+          <input id="lore-kind-input" class="lore-kind-input" placeholder="Type (e.g. character)" aria-label="Lore type" />
+          <input id="lore-tags" class="tags" placeholder="tags, comma separated" aria-label="Lore tags" />
+          <label class="section-label" for="lore-summary">Summary</label>
+          <textarea id="lore-summary" class="synopsis" placeholder="Short summary or description..." aria-label="Lore summary"></textarea>
+
+          <label class="section-label" for="lore-body">Body</label>
+          <textarea id="lore-body" class="body" placeholder="Write lore, characters, locations, timelines..." aria-label="Lore body"></textarea>
+          
+          <!-- Custom paired fields (creator-defined title + content) -->
+          <div class="lore-custom-fields" style="display:flex; flex-direction:column; gap:12px; margin-top:8px;">
+            <div class="pair">
+              <label class="section-label" for="entry1name">Field 1 Name</label>
+              <input id="entry1name" class="small-name-input" placeholder="Field 1 name" aria-label="Entry 1 name" />
+              <label class="section-label" for="entry1content">Field 1 Content</label>
+              <textarea id="entry1content" class="body" rows="4" placeholder="Field 1 content" aria-label="Entry 1 content"></textarea>
+            </div>
+            <div class="pair">
+              <label class="section-label" for="entry2name">Field 2 Name</label>
+              <input id="entry2name" class="small-name-input" placeholder="Field 2 name" aria-label="Entry 2 name" />
+              <label class="section-label" for="entry2content">Field 2 Content</label>
+              <textarea id="entry2content" class="body" rows="4" placeholder="Field 2 content" aria-label="Entry 2 content"></textarea>
+            </div>
+            <div class="pair">
+              <label class="section-label" for="entry3name">Field 3 Name</label>
+              <input id="entry3name" class="small-name-input" placeholder="Field 3 name" aria-label="Entry 3 name" />
+              <label class="section-label" for="entry3content">Field 3 Content</label>
+              <textarea id="entry3content" class="body" rows="4" placeholder="Field 3 content" aria-label="Entry 3 content"></textarea>
+            </div>
+            <div class="pair">
+              <label class="section-label" for="entry4name">Field 4 Name</label>
+              <input id="entry4name" class="small-name-input" placeholder="Field 4 name" aria-label="Entry 4 name" />
+              <label class="section-label" for="entry4content">Field 4 Content</label>
+              <textarea id="entry4content" class="body" rows="4" placeholder="Field 4 content" aria-label="Entry 4 content"></textarea>
+            </div>
+          </div>
+        </div>
       </section>
     </main>
   </div>

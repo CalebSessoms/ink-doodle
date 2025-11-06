@@ -8,11 +8,13 @@ It is designed for novelists, storytellers, and worldbuilders, focusing on struc
 
 ## Features (Current)
 - Chapters, Notes, and References — Create, edit, and manage different entry types.
+ - Lore / Worldbuilding editor — Create and edit unified Lore entries (freeform "lore kind") with paired custom fields (Field 1..4 name/content). Lore has a dedicated editor pane and is persisted to per-item JSON files under a project `lore/` folder.
 - Autosave Engine — Automatically saves your work after a brief period of inactivity and on focus/tab/window changes.
 - Drag & Drop Reordering — Rearrange entries within their lists.
 - Entry Deletion — Delete entries from within the editor; menu action and keybind supported.
 - Multiple Projects — Create, switch, and manage separate projects with an integrated project picker.
 - Workspace and Save-Back System — Projects are stored in your Documents folder (`InkDoodleProjects`), with a local workspace for active editing.
+  - Lore persistence parity: Lore entries are saved per-item (LOR-...json) in a `lore/` folder and indexed in `data/project.json`, matching the behavior of chapters/notes/refs.
 - Keyboard Shortcuts  
   - Ctrl + S — Save workspace  
   - Ctrl + Shift + S — Save back to project directory  
@@ -71,6 +73,14 @@ ink-doodle/
 - Introduce relationships between lore and chapters
 - Persistent metadata and project summaries
 - Improved autosave stability and undo/redo polish
+
+### Recent progress (Nov 2025)
+- Lore Editor: A unified Lore editor pane was added to the renderer. Lore is a single entry type where the user types a freeform "lore kind" rather than selecting discrete subtabs.
+- Custom fields: Lore supports four paired custom fields (name above content) rendered and styled to match other editor sections.
+- On-disk persistence: Lore is written to per-item JSON files inside a `lore/` folder using `LOR-...` filename prefixes and is included in `data/project.json` in the same index-like format as other types. Loader code includes mappings for common legacy keys (for example, `lore_type` → `lore_kind`, `content` → `body`, and `Field N Name/Content` → `entryN*`).
+- Developer tooling: a small `scripts/sync-to-workspace.ps1` helper and README note were added to ease testing the renderer against the runtime workspace copy.
+
+Notes: If you prefer to convert existing legacy-shaped lore files into the canonical shape on disk, I can add an optional migration/dry-run tool to rewrite files safely.
 
 ### Week 7 — Visualization and Advanced Tools (Final)
 **Goal:** Visualization and export systems.
