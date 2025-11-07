@@ -28,6 +28,34 @@ const PROJECTS = {
   CODE: 'code'
 } as const;
 
+// Minimal lore field names initialization — keep as constants so other
+// modules can reference the expected local keys without performing any
+// mapping work here. This is intentionally small and only declares the
+// keys; no conversion logic is added in this change.
+const LORE = {
+  ID: 'id',
+  CODE: 'code',
+  PROJECT_ID: 'project_id',
+  CREATOR_ID: 'creator_id',
+  NUMBER: 'number',
+  TITLE: 'title',
+  CONTENT: 'content',
+  BODY: 'body',
+  SUMMARY: 'summary',
+  TAGS: 'tags',
+  LORE_KIND: 'lore_kind',
+  ENTRY1_NAME: 'entry1_name',
+  ENTRY1_CONTENT: 'entry1_content',
+  ENTRY2_NAME: 'entry2_name',
+  ENTRY2_CONTENT: 'entry2_content',
+  ENTRY3_NAME: 'entry3_name',
+  ENTRY3_CONTENT: 'entry3_content',
+  ENTRY4_NAME: 'entry4_name',
+  ENTRY4_CONTENT: 'entry4_content',
+  CREATED_AT: 'created_at',
+  UPDATED_AT: 'updated_at'
+} as const;
+
 /**
  * Load a local project directory and prepare a structured object suitable
  * for the uploader. This will call `collectProjectData` and return a small
@@ -39,6 +67,7 @@ const PROJECTS = {
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { getColumnValue } from './db.query';
+import { appendDebugLog } from './log';
 
 let lastLoadedProject: Record<string, any> | null = null;
 let lastLoadedCreator: Record<string, any> | null = null;
@@ -510,6 +539,10 @@ export function getCreatorColumns() {
   return CREATORS;
 }
 
+export function getLoreColumns() {
+  return LORE;
+}
+
 /**
  * translateDbToLocal
  * Convert a DB payload (project row + arrays of chapters/notes/refs) into
@@ -523,7 +556,7 @@ export function getCreatorColumns() {
  * `collectProjectData`). For now the function returns a not-implemented
  * result so callers can be wired without throwing.
  */
-export async function translateDbToLocal(dbPayloadOrPath?: any, options?: { baseDir?: string }): Promise<{ ok: boolean; projects?: Array<{ id?: any; project: any; entries: { chapters: any[]; notes: any[]; refs: any[] } }>; error?: string }> {
+export async function translateDbToLocal(dbPayloadOrPath?: any, options?: { baseDir?: string }): Promise<{ ok: boolean; projects?: Array<{ id?: any; project: any; entries: { chapters: any[]; notes: any[]; refs: any[]; lore: any[] } }>; error?: string }> {
   // If dbPayloadOrPath is a string path or omitted, read the temporary
   // JSON file from disk (defaults to process.cwd()/temporary.json).
   // Otherwise treat dbPayloadOrPath as an already-parsed payload object
@@ -547,7 +580,7 @@ export async function translateDbToLocal(dbPayloadOrPath?: any, options?: { base
     else if (root.project || root.entries) payloads = [root];
     else return { ok: false, error: 'unrecognized temporary.json structure' };
 
-    const outProjects: Array<{ id?: any; project: any; entries: { chapters: any[]; notes: any[]; refs: any[] } }> = [];
+  const outProjects: Array<{ id?: any; project: any; entries: { chapters: any[]; notes: any[]; refs: any[]; lore: any[] } }> = [];
 
     for (const p of payloads) {
       const dbProject = p.project || {};
@@ -616,7 +649,7 @@ export async function translateDbToLocal(dbPayloadOrPath?: any, options?: { base
         };
       });
 
-      const refsOut: any[] = refsIn.map((r: any) => {
+  const refsOut: any[] = refsIn.map((r: any) => {
         const localId = (() => {
           const num = Number(r.code ?? null);
           return Number.isFinite(num) ? num : (r.code ?? null);
@@ -638,7 +671,78 @@ export async function translateDbToLocal(dbPayloadOrPath?: any, options?: { base
         };
       });
 
-      outProjects.push({ id: localProjectId, project: localProject, entries: { chapters: chaptersOut, notes: notesOut, refs: refsOut } });
+      // Map lore entries if provided (support either `lores` or `lore` key from payload)
+      const loresIn = Array.isArray(dbEntries.lores) ? dbEntries.lores : (Array.isArray(dbEntries.lore) ? dbEntries.lore : []);
+      appendDebugLog(`db.format:translateDbToLocal — mapping ${loresIn.length} lore entries for project ${localProjectId}`);
+      const loresOut: any[] = [];
+      for (let idx = 0; idx < loresIn.length; idx++) {
+        const l = loresIn[idx];
+        try {
+          const localId = (() => {
+            const num = Number(l.code ?? null);
+            return Number.isFinite(num) ? num : (l.code ?? null);
+          })();
+          const mapped = {
+            id: localId,
+            code: l.id ?? null,
+            project_id: localProjectId,
+            creator_id: l.creator_id ?? null,
+            number: l.number ?? null,
+            title: l.title ?? null,
+            content: l.content ?? l.body ?? '',
+            summary: l.summary ?? null,
+            tags: Array.isArray(l.tags) ? l.tags : [],
+            lore_kind: l.lore_kind ?? l.lore_type ?? null,
+            entry1_name: l.entry1name ?? l.entry1_name ?? null,
+            entry1_content: l.entry1content ?? l.entry1_content ?? null,
+            entry2_name: l.entry2name ?? l.entry2_name ?? null,
+            entry2_content: l.entry2content ?? l.entry2_content ?? null,
+            entry3_name: l.entry3name ?? l.entry3_name ?? null,
+            entry3_content: l.entry3content ?? l.entry3_content ?? null,
+            entry4_name: l.entry4name ?? l.entry4_name ?? null,
+            entry4_content: l.entry4content ?? l.entry4_content ?? null,
+            created_at: l.created_at ?? null,
+            updated_at: l.updated_at ?? null
+          };
+          try {
+            const src = {
+              lore_kind: l.lore_kind ?? l.lore_type ?? l.loreType ?? null,
+              entry1_name: l.entry1name ?? l.entry1_name ?? null,
+              entry1_content: typeof (l.entry1content ?? l.entry1_content) === 'string' ? (l.entry1content ?? l.entry1_content).slice(0, 200) : l.entry1content ?? l.entry1_content,
+              entry2_name: l.entry2name ?? l.entry2_name ?? null,
+              entry2_content: typeof (l.entry2content ?? l.entry2_content) === 'string' ? (l.entry2content ?? l.entry2_content).slice(0, 200) : l.entry2content ?? l.entry2_content,
+              entry3_name: l.entry3name ?? l.entry3_name ?? null,
+              entry3_content: typeof (l.entry3content ?? l.entry3_content) === 'string' ? (l.entry3content ?? l.entry3_content).slice(0, 200) : l.entry3content ?? l.entry3_content,
+              entry4_name: l.entry4name ?? l.entry4_name ?? null,
+              entry4_content: typeof (l.entry4content ?? l.entry4_content) === 'string' ? (l.entry4content ?? l.entry4_content).slice(0, 200) : l.entry4content ?? l.entry4_content,
+              tags: Array.isArray(l.tags) ? l.tags : l.tags ?? null
+            };
+            const out = {
+              lore_kind: mapped.lore_kind,
+              entry1_name: mapped.entry1_name,
+              entry1_content: typeof mapped.entry1_content === 'string' ? mapped.entry1_content.slice(0, 200) : mapped.entry1_content,
+              entry2_name: mapped.entry2_name,
+              entry2_content: typeof mapped.entry2_content === 'string' ? mapped.entry2_content.slice(0, 200) : mapped.entry2_content,
+              entry3_name: mapped.entry3_name,
+              entry3_content: typeof mapped.entry3_content === 'string' ? mapped.entry3_content.slice(0, 200) : mapped.entry3_content,
+              entry4_name: mapped.entry4_name,
+              entry4_content: typeof mapped.entry4_content === 'string' ? mapped.entry4_content.slice(0, 200) : mapped.entry4_content,
+              tags: mapped.tags
+            };
+            appendDebugLog(`db.format:translateDbToLocal — lore idx=${idx} project=${localProjectId} sourceFields=${JSON.stringify(src)} mappedFields=${JSON.stringify(out)}`);
+          } catch (e) {
+            appendDebugLog(`db.format:translateDbToLocal — failed to log lore fields for idx=${idx} project=${localProjectId}: ${(e as Error).message}`);
+          }
+          loresOut.push(mapped);
+        } catch (e) {
+          appendDebugLog(`db.format:translateDbToLocal — failed mapping lore index ${idx} for project ${localProjectId}: ${(e as Error).message}`);
+          appendDebugLog(`db.format:translateDbToLocal — problematic lore payload: ${JSON.stringify(l)}`);
+          // push a minimal placeholder so indexes remain aligned
+          loresOut.push({ id: null, code: null, project_id: localProjectId, title: null, content: null });
+        }
+      }
+
+      outProjects.push({ id: localProjectId, project: localProject, entries: { chapters: chaptersOut, notes: notesOut, refs: refsOut, lore: loresOut } });
     }
 
     return { ok: true, projects: outProjects };

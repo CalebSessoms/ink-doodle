@@ -2504,7 +2504,9 @@ function saveUIPrefsDebounced() {
             loreOut.title = (view.title !== undefined) ? view.title : (raw.title !== undefined ? raw.title : '');
 
             // Use 'content' as the main short text field per requested format. Prefer raw.content, then view.body, then raw.body.
-            loreOut.content = (raw && Object.prototype.hasOwnProperty.call(raw,'content')) ? raw.content : ((view.body !== undefined) ? view.body : (raw.body !== undefined ? raw.body : ''));
+            // Prefer the current in-memory view value if present (user edited in UI).
+            // Fallback to raw.content or raw.body when view.body is undefined.
+            loreOut.content = (view.body !== undefined) ? view.body : ((raw && Object.prototype.hasOwnProperty.call(raw,'content')) ? raw.content : (raw.body !== undefined ? raw.body : ''));
 
             // summary
             loreOut.summary = (view.summary !== undefined) ? view.summary : (raw.summary !== undefined ? raw.summary : '');
@@ -2699,11 +2701,23 @@ function saveUIPrefsDebounced() {
                   for (let i = 1; i <= 4; i++) {
                     const nameKey = `Field ${i} Name`;
                     const contentKey = `Field ${i} Content`;
+                    // Normalize several legacy/key variants into the canonical
+                    // `entry${i}name` / `entry${i}content` keys expected by the UI.
                     if (Object.prototype.hasOwnProperty.call(raw, nameKey) && !Object.prototype.hasOwnProperty.call(raw, `entry${i}name`)) {
                       raw[`entry${i}name`] = raw[nameKey];
                     }
+                    // Support underscore variant: entry1_name
+                    const underscoreName = `entry${i}_name`;
+                    if (Object.prototype.hasOwnProperty.call(raw, underscoreName) && !Object.prototype.hasOwnProperty.call(raw, `entry${i}name`)) {
+                      raw[`entry${i}name`] = raw[underscoreName];
+                    }
                     if (Object.prototype.hasOwnProperty.call(raw, contentKey) && !Object.prototype.hasOwnProperty.call(raw, `entry${i}content`)) {
                       raw[`entry${i}content`] = raw[contentKey];
+                    }
+                    // Support underscore variant: entry1_content
+                    const underscoreContent = `entry${i}_content`;
+                    if (Object.prototype.hasOwnProperty.call(raw, underscoreContent) && !Object.prototype.hasOwnProperty.call(raw, `entry${i}content`)) {
+                      raw[`entry${i}content`] = raw[underscoreContent];
                     }
                   }
                 }
@@ -2730,6 +2744,23 @@ function saveUIPrefsDebounced() {
                   __filename: file,
                   __filepath: entryPath,
                 };
+
+                // Promote certain lore-specific raw fields into the top-level view
+                // so the UI can read them directly (populateEditor expects them).
+                try {
+                  if (inferredType === 'lore') {
+                    // prefer canonical key names with fallbacks
+                    view.lore_kind = raw.lore_kind ?? raw.lore_type ?? raw.loreType ?? '';
+                    view.summary = raw.summary ?? raw.synopsis ?? '';
+                    // map up to four paired fields
+                    for (let i = 1; i <= 4; i++) {
+                      const n = `entry${i}name`;
+                      const c = `entry${i}content`;
+                      view[n] = raw[n] !== undefined ? raw[n] : (raw[`Field ${i} Name`] !== undefined ? raw[`Field ${i} Name`] : '');
+                      view[c] = raw[c] !== undefined ? raw[c] : (raw[`Field ${i} Content`] !== undefined ? raw[`Field ${i} Content`] : '');
+                    }
+                  }
+                } catch (e) { /* best-effort */ }
 
                 // Promote summary/synopsis from raw into the top-level view so the
                 // renderer/editor can read it directly. Preserve raw on __raw.

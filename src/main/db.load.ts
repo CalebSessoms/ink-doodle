@@ -9,7 +9,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { appendDebugLog } from './log';
 import { pool } from './db';
-import { getProjectIdsForCreator, getProjectInfo, getProjectEntries } from './db.query';
+import { getProjectIdsForCreator, getProjectInfo, getProjectEntries, getProjectLore } from './db.query';
 import { translateDbToLocal } from './db.format';
 
 /**
@@ -119,6 +119,14 @@ export async function fullLoad(options?: { baseDir?: string; persist?: boolean; 
 				try {
 					const project = await getProjectInfo(pid);
 					const entries = await getProjectEntries(pid);
+					// Fetch lore rows for this project and attach so translateDbToLocal can map them
+					try {
+						const lores = await getProjectLore(pid);
+						// attach under either `lores` key (translateDbToLocal accepts lores or lore)
+						(entries as any).lores = lores;
+					} catch (e) {
+						appendDebugLog(`db.load:fullLoad — failed to fetch lores for ${pid}: ${e?.message || e}`);
+					}
 				// Choose folder name from title or id
 				const title = project?.title ? String(project.title) : '';
 				let folderName = sanitizeName(title) || String(pid);
@@ -144,7 +152,15 @@ export async function fullLoad(options?: { baseDir?: string; persist?: boolean; 
 						await fs.mkdir(path.join(projectPath, 'chapters'), { recursive: true });
 						await fs.mkdir(path.join(projectPath, 'notes'), { recursive: true });
 						await fs.mkdir(path.join(projectPath, 'refs'), { recursive: true });
+						// Ensure a lore directory exists even if there are no lore entries yet
+						await fs.mkdir(path.join(projectPath, 'lore'), { recursive: true });
 
+						// Debug: log counts of fetched entry arrays before translation
+						try {
+							appendDebugLog(`db.load:fullLoad — processing project ${pid} title="${title}" entries: chapters=${(entries.chapters||[]).length} notes=${(entries.notes||[]).length} refs=${(entries.refs||[]).length} lores=${((entries as any).lores||[]).length}`);
+						} catch (e) {
+							// ignore logging errors
+						}
 						// Convert DB payload to local shapes
 						const conv = await translateDbToLocal({ project, entries });
 						if (!conv.ok || !Array.isArray(conv.projects) || conv.projects.length === 0) {
@@ -160,6 +176,8 @@ export async function fullLoad(options?: { baseDir?: string; persist?: boolean; 
 							lp.entries.chapters.forEach((c: any, i: number) => pushSummary(c, 'chapter', i));
 							lp.entries.notes.forEach((n: any, i: number) => pushSummary(n, 'note', i));
 							lp.entries.refs.forEach((r: any, i: number) => pushSummary(r, 'reference', i));
+							// Include lore entries in the project summary list
+							(lp.entries.lore || []).forEach((l: any, i: number) => pushSummary(l, 'lore', i));
 
 							const pjPath = path.join(projectPath, 'data', 'project.json');
 							await fs.writeFile(pjPath, JSON.stringify({ project: lp.project, entries: summaryEntries }, null, 2), 'utf8');
@@ -171,6 +189,7 @@ export async function fullLoad(options?: { baseDir?: string; persist?: boolean; 
 									const fp = path.join(projectPath, subdir, name);
 									try {
 										await fs.writeFile(fp, JSON.stringify(e, null, 2), 'utf8');
+										appendDebugLog(`db.load:fullLoad — wrote ${fp}`);
 									} catch (err) {
 										appendDebugLog(`db.load:fullLoad — failed to write ${fp}: ${(err as Error).message}`);
 									}
@@ -180,6 +199,8 @@ export async function fullLoad(options?: { baseDir?: string; persist?: boolean; 
 							await writeEntries(lp.entries.chapters, 'chapters');
 							await writeEntries(lp.entries.notes, 'notes');
 							await writeEntries(lp.entries.refs, 'refs');
+							// Write lore entries
+							await writeEntries(lp.entries.lore || [], 'lore');
 
 							appendDebugLog(`db.load:fullLoad — created project folder and files for ${pid} at ${projectPath}`);
 							created.push({ id: pid, path: projectPath });

@@ -75,10 +75,25 @@ ink-doodle/
 - Improved autosave stability and undo/redo polish
 
 ### Recent progress (Nov 2025)
-- Lore Editor: A unified Lore editor pane was added to the renderer. Lore is a single entry type where the user types a freeform "lore kind" rather than selecting discrete subtabs.
-- Custom fields: Lore supports four paired custom fields (name above content) rendered and styled to match other editor sections.
-- On-disk persistence: Lore is written to per-item JSON files inside a `lore/` folder using `LOR-...` filename prefixes and is included in `data/project.json` in the same index-like format as other types. Loader code includes mappings for common legacy keys (for example, `lore_type` → `lore_kind`, `content` → `body`, and `Field N Name/Content` → `entryN*`).
-- Developer tooling: a small `scripts/sync-to-workspace.ps1` helper and README note were added to ease testing the renderer against the runtime workspace copy.
+   - Loader/writer compatibility: the renderer load/save path now normalizes common legacy variants (for example `lore_type` → `lore_kind`, `entry1_name`/`entry1_content` → `entry1name`/`entry1content`, and `Field N Name/Content` variants) so existing projects load correctly and UI edits persist.
+   - Content persistence: edits made in the Lore editor (the main body text) are now preserved and written back to the `content` field on disk rather than being overwritten by the original raw file value.
+   - `src/main/db.format.ts` declares local lore field constants and now maps DB payloads into local lore shapes during DB→local translation, with added per-field debug logging to help trace missing values.
+   - `src/main/db.query.ts` added a `getProjectLore` helper to fetch lore rows from the DB.
+   - `src/main/db.load.ts` now creates the `lore/` directory during full-load and writes per-item lore JSON files into it.
+ - Lore Editor: A unified Lore editor pane was added to the renderer. Lore is a single entry type where the user types a freeform "lore kind" rather than selecting discrete subtabs.
+ - Custom fields: Lore supports four paired custom fields (name above content) rendered and styled to match other editor sections.
+ - On-disk persistence & compatibility:
+   - Lore is written to per-item JSON files inside a `lore/` folder and is indexed in `data/project.json` alongside `chapters`, `notes`, and `refs`.
+   - The renderer now normalizes common legacy variants (for example `lore_type` → `lore_kind`, `entry1_name`/`entry1_content` → `entry1name`/`entry1content`, and `Field N Name/Content` variants) so existing projects load correctly and UI edits persist.
+   - Edits made in the Lore editor (the main body text) are preserved and written back to the `content` field on disk rather than being overwritten by the original raw file value.
+ - Renderer reliability: fixed several issues so Save Back reliably persists lore edits (including title changes and newly-created entries). The renderer now promotes legacy/raw fields into the view the UI uses and normalizes key variants so the editor shows values that were present on disk.
+ - Main process / TypeScript updates: the backend helpers received lore support:
+   - `src/main/db.format.ts` declares local lore field constants and maps DB payloads into local lore shapes during DB→local translation, with per-field debug logging added to help trace missing values.
+   - `src/main/db.query.ts` added a `getProjectLore` helper to fetch lore rows from the DB.
+   - `src/main/db.load.ts` now creates the `lore/` directory during full-load and writes per-item lore JSON files into it.
+ - Debugging: per-field debug logging was added in the format/load code and in the renderer to help determine whether missing values originate from the DB, the DB→local translation, or the renderer load path.
+ - Type-check: TypeScript checks (`npx tsc --noEmit`) were run after edits and passed with no errors.
+ - Pending/runtime notes: uploader/runtime dry-runs (uploader invocation) encountered ESM/module-resolution issues in the current environment, so uploader runtime verification is pending; the loader/save fixes and debug logging are in place for when DB testing is available.
 
 Notes: If you prefer to convert existing legacy-shaped lore files into the canonical shape on disk, I can add an optional migration/dry-run tool to rewrite files safely.
 

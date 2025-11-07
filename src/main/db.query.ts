@@ -194,4 +194,26 @@ export async function getProjectEntries(projectCode: string): Promise<{ chapters
   };
 }
 
-export default { getColumnValue, getFirstRow, getProjectIdsForCreator, getChapterIdsForCreator, getNoteIdsForCreator, getRefIdsForCreator, getLoreIdsForCreator, getProjectInfo, getProjectEntries };
+/**
+ * Get all lore rows for a project identified by its `code`.
+ * Returns an array of lore row objects (empty array when none found).
+ */
+export async function getProjectLore(projectCode: string): Promise<any[]> {
+  // Resolve project id first
+  const project = await getProjectInfo(projectCode);
+  if (!project) return [];
+  const projectId = project.id;
+
+  const loresQ = `SELECT id, code, project_id, creator_id, number, title, content,
+                summary, tags, lore_kind, entry1_name, entry1_content,
+                entry2_name, entry2_content, entry3_name, entry3_content,
+                entry4_name, entry4_content, created_at, updated_at
+         FROM lore
+         WHERE project_id = $1
+         ORDER BY number NULLS LAST, id;`;
+
+  const res = await pool.query(loresQ, [projectId]);
+  return res.rows || [];
+}
+
+export default { getColumnValue, getFirstRow, getProjectIdsForCreator, getChapterIdsForCreator, getNoteIdsForCreator, getRefIdsForCreator, getLoreIdsForCreator, getProjectInfo, getProjectEntries, getProjectLore };
