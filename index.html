@@ -18,6 +18,13 @@
        <div class="topbar-right">
         <button class="icon-btn" id="settings-btn" type="button" aria-label="Settings">⚙</button>
 
+        <!-- Top-level app tabs: Story, Lore, Timeline -->
+        <div class="top-tabs" role="tablist" aria-label="App Tabs">
+          <button class="top-tab btn active" data-tab="story" type="button">Story</button>
+          <button class="top-tab btn" data-tab="lore" type="button">Lore</button>
+          <button class="top-tab btn" data-tab="timeline" type="button">Timeline</button>
+        </div>
+
         <!-- Simple Logout (replaces dropdown) -->
         <button class="btn" id="logout-btn" type="button">Log out</button>
       </div>
@@ -49,7 +56,7 @@
       <!-- Editor Pane -->
       <section class="editor" aria-label="Editor">
         <div class="editor-header">
-        <div class="title-row">
+            <div class="title-row">
             <input
               class="title-input"
               id="title-input"
@@ -59,7 +66,7 @@
               aria-label="Title"
             />
             <button class="btn danger" id="editor-delete-btn" type="button" title="Delete entry">🗑 Delete</button>
-        <button class="btn" id="switch-to-lore-btn" type="button" title="Switch to Lore Editor">🧭 Lore</button>
+          <!-- Top navigation handled in the header; removed duplicate mirrored buttons here -->
           </div>
 
             <div class="meta-row">
@@ -188,6 +195,11 @@
             </div>
           </div>
         </div>
+      </section>
+      
+      <!-- Timeline Pane (empty for now) -->
+      <section class="timeline hidden" id="timeline" aria-label="Timeline">
+        <div style="padding:16px; color:var(--muted);">Timeline view (empty)</div>
       </section>
     </main>
   </div>

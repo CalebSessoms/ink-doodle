@@ -668,6 +668,10 @@ async function _wireDebugLogPathEarly() {
   entry4content: $("#entry4content"),
   tabsWriting: document.querySelector('.tabs-writing'),
   tabsLore: document.querySelector('.tabs-lore'),
+  // Top-level app tabs (Story / Lore / Timeline)
+  topTabs: document.querySelector('.top-tabs'),
+  topTabButtons: document.querySelectorAll('.top-tabs .top-tab'),
+  timeline: document.getElementById('timeline'),
   };
 
   // Top-level document capture handler as a safety net: handle clicks on
@@ -746,7 +750,8 @@ async function _wireDebugLogPathEarly() {
 
   function visibleEntries() {
     dbg(`visibleEntries -> activeTab=${state.activeTab}`);
-    if (state.activeTab === 'lore') {
+    // Treat timeline as a view of lore entries (sidebar should show lore when timeline active)
+    if (state.activeTab === 'lore' || state.activeTab === 'timeline') {
       // Show all unified lore entries
       const list = state.entries
         .filter(e => e.type === 'lore')
@@ -1510,6 +1515,12 @@ function saveUIPrefsDebounced() {
     // Hide the old empty overlay
     if (el.empty) { el.empty.classList.add("hidden"); el.empty.style.display = "none"; }
 
+    // Update sidebar header to indicate Lore when in lore mode
+    try {
+      const sidebarTitle = document.querySelector('.sidebar-header h2');
+      if (sidebarTitle) sidebarTitle.textContent = (state.activeTab === 'lore') ? 'Lore' : 'Writing';
+    } catch (e) { dbg(`renderList: failed to update sidebar header: ${e?.message || e}`); }
+
   dbg(`renderList — rendering ${list.length} visible entries (activeTab=${state.activeTab} selected=${state.selectedId})`);
   list.forEach((e, idx) => {
     const li = document.createElement("li");
@@ -1708,21 +1719,21 @@ function saveUIPrefsDebounced() {
     if (el.goalProgress) el.goalProgress.style.display = "none";
 
     updateWordCount();
-    // Clear lore-specific fields
-    if (el.loreTitle) el.loreTitle.value = "";
-    if (el.loreKind) el.loreKind.value = "";
-    if (el.loreTags) el.loreTags.value = "";
-    if (el.loreSummary) el.loreSummary.value = "";
-    if (el.loreBody) el.loreBody.value = "";
+  // Clear lore-specific fields (defensive: some elements may not be inputs)
+  if (el.loreTitle) { if ('value' in el.loreTitle) el.loreTitle.value = ""; else el.loreTitle.textContent = ""; }
+  if (el.loreKind) { if ('value' in el.loreKind) el.loreKind.value = ""; else el.loreKind.textContent = ""; }
+  if (el.loreTags) { if ('value' in el.loreTags) el.loreTags.value = ""; else el.loreTags.textContent = ""; }
+  if (el.loreSummary) { if ('value' in el.loreSummary) el.loreSummary.value = ""; else el.loreSummary.textContent = ""; }
+  if (el.loreBody) { if ('value' in el.loreBody) el.loreBody.value = ""; else el.loreBody.textContent = ""; }
     // Clear custom paired fields
-    if (el.entry1name) el.entry1name.value = "";
-    if (el.entry1content) el.entry1content.value = "";
-    if (el.entry2name) el.entry2name.value = "";
-    if (el.entry2content) el.entry2content.value = "";
-    if (el.entry3name) el.entry3name.value = "";
-    if (el.entry3content) el.entry3content.value = "";
-    if (el.entry4name) el.entry4name.value = "";
-    if (el.entry4content) el.entry4content.value = "";
+    if (el.entry1name) { if ('value' in el.entry1name) el.entry1name.value = ""; else el.entry1name.textContent = ""; }
+    if (el.entry1content) { if ('value' in el.entry1content) el.entry1content.value = ""; else el.entry1content.textContent = ""; }
+    if (el.entry2name) { if ('value' in el.entry2name) el.entry2name.value = ""; else el.entry2name.textContent = ""; }
+    if (el.entry2content) { if ('value' in el.entry2content) el.entry2content.value = ""; else el.entry2content.textContent = ""; }
+    if (el.entry3name) { if ('value' in el.entry3name) el.entry3name.value = ""; else el.entry3name.textContent = ""; }
+    if (el.entry3content) { if ('value' in el.entry3content) el.entry3content.value = ""; else el.entry3content.textContent = ""; }
+    if (el.entry4name) { if ('value' in el.entry4name) el.entry4name.value = ""; else el.entry4name.textContent = ""; }
+    if (el.entry4content) { if ('value' in el.entry4content) el.entry4content.value = ""; else el.entry4content.textContent = ""; }
   }
 
   function selectEntry(idOrKey) {
@@ -1799,21 +1810,21 @@ function saveUIPrefsDebounced() {
       hide(el.referenceTypeWrapper); hide(el.sourceLinkLabel); hide(el.sourceLink);
 
       // Populate lore-specific editor (in the dedicated lore pane)
-  if (el.loreTitle) el.loreTitle.value = entry.title || '';
-  if (el.loreKind) { el.loreKind.classList.remove('hidden'); el.loreKind.value = entry.lore_kind || ''; }
-  if (el.loreTags) el.loreTags.value = (entry.tags || []).join(', ');
-  if (el.loreSummary) el.loreSummary.value = entry.summary || '';
-  if (el.loreBody) el.loreBody.value = entry.body || '';
+  if (el.loreTitle) { if ('value' in el.loreTitle) el.loreTitle.value = entry.title || ''; else el.loreTitle.textContent = entry.title || ''; }
+  if (el.loreKind) { try { el.loreKind.classList.remove('hidden'); } catch (e) {} if ('value' in el.loreKind) el.loreKind.value = entry.lore_kind || ''; else el.loreKind.textContent = entry.lore_kind || ''; }
+  if (el.loreTags) { if ('value' in el.loreTags) el.loreTags.value = (entry.tags || []).join(', '); else el.loreTags.textContent = (entry.tags || []).join(', '); }
+  if (el.loreSummary) { if ('value' in el.loreSummary) el.loreSummary.value = entry.summary || ''; else el.loreSummary.textContent = entry.summary || ''; }
+  if (el.loreBody) { if ('value' in el.loreBody) el.loreBody.value = entry.body || ''; else el.loreBody.textContent = entry.body || ''; }
 
   // Populate custom paired fields if present on the entry
-  if (el.entry1name) el.entry1name.value = entry.entry1name || '';
-  if (el.entry1content) el.entry1content.value = entry.entry1content || '';
-  if (el.entry2name) el.entry2name.value = entry.entry2name || '';
-  if (el.entry2content) el.entry2content.value = entry.entry2content || '';
-  if (el.entry3name) el.entry3name.value = entry.entry3name || '';
-  if (el.entry3content) el.entry3content.value = entry.entry3content || '';
-  if (el.entry4name) el.entry4name.value = entry.entry4name || '';
-  if (el.entry4content) el.entry4content.value = entry.entry4content || '';
+  if (el.entry1name) { if ('value' in el.entry1name) el.entry1name.value = entry.entry1name || ''; else el.entry1name.textContent = entry.entry1name || ''; }
+  if (el.entry1content) { if ('value' in el.entry1content) el.entry1content.value = entry.entry1content || ''; else el.entry1content.textContent = entry.entry1content || ''; }
+  if (el.entry2name) { if ('value' in el.entry2name) el.entry2name.value = entry.entry2name || ''; else el.entry2name.textContent = entry.entry2name || ''; }
+  if (el.entry2content) { if ('value' in el.entry2content) el.entry2content.value = entry.entry2content || ''; else el.entry2content.textContent = entry.entry2content || ''; }
+  if (el.entry3name) { if ('value' in el.entry3name) el.entry3name.value = entry.entry3name || ''; else el.entry3name.textContent = entry.entry3name || ''; }
+  if (el.entry3content) { if ('value' in el.entry3content) el.entry3content.value = entry.entry3content || ''; else el.entry3content.textContent = entry.entry3content || ''; }
+  if (el.entry4name) { if ('value' in el.entry4name) el.entry4name.value = entry.entry4name || ''; else el.entry4name.textContent = entry.entry4name || ''; }
+  if (el.entry4content) { if ('value' in el.entry4content) el.entry4content.value = entry.entry4content || ''; else el.entry4content.textContent = entry.entry4content || ''; }
 
       // Ensure story editor hidden when lore is active (switchTab handles pane visibility)
       if (el.goalWrap) el.goalWrap.style.display = 'none';
@@ -1965,9 +1976,20 @@ function saveUIPrefsDebounced() {
       t.setAttribute('aria-selected', active ? 'true' : 'false');
     });
 
-    // If switching to lore, show lore subtabs; otherwise show writing tabs
-    if (tabName === 'lore') {
-      // Hide writing tabs and show unified lore mode (no subtabs)
+    // Update top-level tabs visual state (Story / Lore / Timeline)
+    try {
+      // Compute which top-tab should appear active: 'lore' and 'timeline' map
+      // directly; any other story-writing tab maps to 'story'
+      const topActive = (tabName === 'lore' || tabName === 'timeline') ? tabName : 'story';
+      document.querySelectorAll('.top-tab').forEach(t => {
+        const active = t.dataset.tab === topActive;
+        t.classList.toggle('active', active);
+        t.setAttribute('aria-selected', active ? 'true' : 'false');
+      });
+    } catch (e) { dbg('switchTab: top-tab visual update failed: ' + (e && e.message)); }
+
+    // If switching to lore or timeline, hide the writing tabs; otherwise show them
+    if (tabName === 'lore' || tabName === 'timeline') {
       if (el.tabsWriting) el.tabsWriting.classList.add('hidden');
       if (el.tabsLore) { el.tabsLore.classList.add('hidden'); el.tabsLore.setAttribute('aria-hidden','true'); }
     } else {
@@ -1983,14 +2005,28 @@ function saveUIPrefsDebounced() {
       // (chapters/notes/references) because that can overwrite the
       // requested tab via state.prevActiveTab.
       if (tabName === 'lore') {
+        // Preserve the previous active tab so we can restore it later when exiting Lore
+        try { state.prevActiveTab = prevActive; } catch (e) {}
+        // Ensure timeline is hidden when switching into lore
+        try { if (el.timeline) el.timeline.classList.add('hidden'); } catch (e) {}
         switchToLore();
-      } else if (prevActive === 'lore') {
-        // We are coming out of Lore into a story tab — restore story UI.
+      } else if (tabName === 'timeline') {
+        // Preserve previous active tab and show timeline pane
+        try { state.prevActiveTab = prevActive; } catch (e) {}
+        try {
+          const editor = document.querySelector('.editor'); if (editor) editor.classList.add('hidden');
+          if (el.loreEditor) el.loreEditor.classList.add('hidden');
+          if (el.timeline) el.timeline.classList.remove('hidden');
+        } catch (e) { dbg(`switchTab -> show timeline failed: ${e?.message || e}`); }
+      } else if (prevActive === 'lore' || prevActive === 'timeline') {
+        // We are coming out of Lore or Timeline into a story tab — restore story UI.
         switchToStory();
       } else {
         // Switching between story tabs only — ensure writing tabs visible
         if (el.tabsWriting) el.tabsWriting.classList.remove('hidden');
         if (el.tabsLore) { el.tabsLore.classList.add('hidden'); el.tabsLore.setAttribute('aria-hidden','true'); }
+        // Ensure timeline hidden
+        try { if (el.timeline) el.timeline.classList.add('hidden'); } catch (e) {}
       }
     } catch (e) { dbg(`switchTab -> editor sync failed: ${e?.message || e}`); }
 
@@ -2011,12 +2047,24 @@ function saveUIPrefsDebounced() {
     const editor = document.querySelector('.editor');
     if (editor) editor.classList.add('hidden');
     if (el.loreEditor) el.loreEditor.classList.remove('hidden');
+    // Reflect top-tab active state
+    try {
+      document.querySelectorAll('.top-tab').forEach(t => {
+        const active = t.dataset.tab === 'lore';
+        t.classList.toggle('active', active);
+        t.setAttribute('aria-selected', active ? 'true' : 'false');
+      });
+    } catch (e) { dbg('switchToLore: failed to update top-tab visuals: ' + (e && e.message)); }
+    // Ensure timeline is hidden when entering lore
+    try { if (el.timeline) el.timeline.classList.add('hidden'); } catch (e) {}
     // ensure the sidebar reflects lore subtabs (do not change activeTab here)
     if (el.tabsWriting) el.tabsWriting.classList.add('hidden');
     if (el.tabsLore) { el.tabsLore.classList.remove('hidden'); el.tabsLore.setAttribute('aria-hidden','false'); }
 
     // put focus into lore textarea
     setTimeout(() => { try { el.loreBody && el.loreBody.focus(); } catch (e) {} }, 40);
+    // Refresh sidebar to show lore entries immediately
+    try { renderList(); } catch (e) { dbg(`switchToLore renderList failed: ${e?.message || e}`); }
   }
 
   function switchToStory() {
@@ -2032,6 +2080,18 @@ function saveUIPrefsDebounced() {
       t.setAttribute('aria-selected', active ? 'true' : 'false');
     });
 
+    // Ensure top-tab visuals reflect Story selected
+    try {
+      document.querySelectorAll('.top-tab').forEach(t => {
+        const active = t.dataset.tab === 'story';
+        t.classList.toggle('active', active);
+        t.setAttribute('aria-selected', active ? 'true' : 'false');
+      });
+    } catch (e) { dbg('switchToStory: failed to update top-tab visuals: ' + (e && e.message)); }
+
+    // Hide timeline pane when returning to story editor
+    try { if (el.timeline) el.timeline.classList.add('hidden'); } catch (e) {}
+
     // Swap sidebar groups back to writing tabs
     if (el.tabsWriting) el.tabsWriting.classList.remove('hidden');
     if (el.tabsLore) { el.tabsLore.classList.add('hidden'); el.tabsLore.setAttribute('aria-hidden','true'); }
@@ -2046,6 +2106,14 @@ function saveUIPrefsDebounced() {
 
     // restore editor focus
     setTimeout(() => { try { el.titleInput && el.titleInput.focus(); } catch (e) {} }, 40);
+
+    // Refresh sidebar immediately and restore sensible selection
+    try {
+      // Ensure the sidebar list reflects the restored active tab
+      renderList();
+      const sel = findEntryByKey(state.selectedId) || visibleEntries()[0];
+      if (sel) { state.selectedId = entryKey(sel); populateEditor(sel); }
+    } catch (e) { dbg(`switchToStory restore failed: ${e?.message || e}`); }
   }
 
   // ───────────────── Word Count ─────────────────
@@ -3248,6 +3316,34 @@ el.wordGoal?.addEventListener("input", () => {
     e.entry4content = el.entry4content.value;
     touchSave();
   });
+
+  // Top tabs (header) wiring — delegate clicks to switchTab
+  try {
+    document.querySelectorAll('.top-tab').forEach(btn => {
+      btn.addEventListener('click', (ev) => {
+        try {
+          const t = btn.dataset.tab;
+          dbg(`top-tab click -> ${t}`);
+          if (t === 'story') {
+            switchTab('chapters');
+          } else if (t === 'lore') {
+            switchTab('lore');
+          } else if (t === 'timeline') {
+            switchTab('timeline');
+          }
+        } catch (e) { dbg('top-tab handler error: ' + (e && e.message)); }
+      });
+    });
+  } catch (e) { dbg('top-tab wiring failed: ' + (e && e.message)); }
+
+  // In-editor top-nav buttons (mirror of top tabs)
+  try {
+    document.getElementById('btn-to-story')?.addEventListener('click', () => switchTab('chapters'));
+    document.getElementById('btn-to-lore')?.addEventListener('click', () => switchTab('lore'));
+    document.getElementById('btn-to-timeline')?.addEventListener('click', () => switchTab('timeline'));
+    document.getElementById('timeline-to-story')?.addEventListener('click', () => switchTab('chapters'));
+    document.getElementById('timeline-to-lore')?.addEventListener('click', () => switchTab('lore'));
+  } catch (e) { dbg('top-nav button wiring failed: ' + (e && e.message)); }
 
   // Tabs (writing group) — rebind helpers to ensure handlers exist and are defensive
   function rebindMainTabs() {
