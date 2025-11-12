@@ -222,6 +222,31 @@ function buildMenu() {
         { role: "zoomIn" },
         { role: "zoomOut" },
         { type: "separator" },
+        {
+          label: "Timeline: Zoom In",
+          accelerator: "CmdOrCtrl+Alt+Plus",
+          click: () => {
+            const w = BrowserWindow.getFocusedWindow() || win;
+            if (w) w.webContents.send('menu:timelineZoomIn');
+          }
+        },
+        {
+          label: "Timeline: Zoom Out",
+          accelerator: "CmdOrCtrl+Alt+-",
+          click: () => {
+            const w = BrowserWindow.getFocusedWindow() || win;
+            if (w) w.webContents.send('menu:timelineZoomOut');
+          }
+        },
+        {
+          label: "Timeline: Reset View",
+          accelerator: "CmdOrCtrl+Alt+0",
+          click: () => {
+            const w = BrowserWindow.getFocusedWindow() || win;
+            if (w) w.webContents.send('menu:timelineReset');
+          }
+        },
+        { type: "separator" },
         { role: "togglefullscreen" },
       ],
     },

@@ -672,7 +672,348 @@ async function _wireDebugLogPathEarly() {
   topTabs: document.querySelector('.top-tabs'),
   topTabButtons: document.querySelectorAll('.top-tabs .top-tab'),
   timeline: document.getElementById('timeline'),
+  timelineCanvas: document.getElementById('timeline-canvas'),
   };
+
+  // In-memory nodes placed on the timeline (keyed by a generated node id)
+  state.timelineNodes = {}; // { nodeId: { entryId, x, y, color } }
+
+  // Timeline viewport: logical scale and translation (in screen pixels)
+  state.timelineViewport = { scale: 1, tx: 0, ty: 0 };
+
+  // Timeline config
+  const TIMELINE = {
+    grid: 12, // pixels (fine, invisible grid)
+    palette: [ '#FF3B30', '#FF9500', '#FFCC00', '#34C759', '#0A84FF', '#5856D6', '#AF52DE' ],
+    jitter: 8 // hue/saturation jitter amount
+  };
+
+  // Utility: pick base color from palette (by entry id hash) and jitter slightly
+  function pickColorForEntry(entry) {
+    try {
+      const hash = String(entry.id || entry.code || entry.title || Math.random()).split("").reduce((a,c)=>a+ c.charCodeAt(0),0);
+      const base = TIMELINE.palette[Math.abs(hash) % TIMELINE.palette.length];
+      // Convert hex -> hsl, jitter, back to hex (simple approach)
+      const rgb = hexToRgb(base);
+      if (!rgb) return base;
+      // apply small random jitter using entry id for determinism
+      const rnd = (n) => Math.floor((Math.abs(hash + n) % 100) / 100 * TIMELINE.jitter) - (TIMELINE.jitter/2);
+      const r = clamp(rgb.r + rnd(1), 30, 230);
+      const g = clamp(rgb.g + rnd(2), 30, 230);
+      const b = clamp(rgb.b + rnd(3), 30, 230);
+      return rgbToHex(r,g,b);
+    } catch (e) { return TIMELINE.palette[0]; }
+  }
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  function hexToRgb(hex) {
+    if (!hex) return null;
+    const h = hex.replace('#','');
+    if (h.length === 3) {
+      return { r: parseInt(h[0]+h[0],16), g: parseInt(h[1]+h[1],16), b: parseInt(h[2]+h[2],16) };
+    }
+    return { r: parseInt(h.slice(0,2),16), g: parseInt(h.slice(2,4),16), b: parseInt(h.slice(4,6),16) };
+  }
+  function rgbToHex(r,g,b){ return '#'+ [r,g,b].map(x => x.toString(16).padStart(2,'0')).join(''); }
+
+  // Ensure timeline canvas exists after DOMContentLoaded (some HTML may be injected later)
+  function ensureTimelineCanvas() {
+    if (!el.timelineCanvas) el.timelineCanvas = document.getElementById('timeline-canvas');
+    return el.timelineCanvas;
+  }
+
+  function setTimelineTransform() {
+    const canvas = ensureTimelineCanvas();
+    if (!canvas) return;
+    const { scale, tx, ty } = state.timelineViewport;
+    canvas.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+  }
+
+  // Convert a screen/client coordinate to canvas logical coordinates (accounting for transform)
+  function clientToCanvas(clientX, clientY) {
+    const canvas = ensureTimelineCanvas();
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    const { scale } = state.timelineViewport;
+    const lx = (clientX - rect.left) / (scale || 1);
+    const ly = (clientY - rect.top) / (scale || 1);
+    return { x: lx, y: ly };
+  }
+
+  // Zoom helper: keep the logical point under (clientX,clientY) stable when scaling
+  function setTimelineScale(newScale, clientX, clientY) {
+    const canvas = ensureTimelineCanvas();
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const old = state.timelineViewport;
+    const s0 = old.scale;
+    const s1 = Math.max(0.25, Math.min(4, newScale));
+    // Compute logical coordinate of client point
+    const lx = (clientX - rect.left) / s0;
+    const ly = (clientY - rect.top) / s0;
+    // New tx/ty such that lx maps to same client point
+    const ntx = clientX - rect.left - lx * s1;
+    const nty = clientY - rect.top - ly * s1;
+    state.timelineViewport.scale = s1;
+    state.timelineViewport.tx = Math.round(ntx);
+    state.timelineViewport.ty = Math.round(nty);
+    // Clamp pan so transformed canvas stays inside its container
+    clampTimelinePan();
+    setTimelineTransform();
+  }
+
+  function clampTimelinePan() {
+    try {
+      const canvas = ensureTimelineCanvas();
+      if (!canvas) return;
+      const container = canvas.parentElement || canvas.closest('.timeline') || document.body;
+      const rect = container.getBoundingClientRect();
+      const cw = canvas.clientWidth * (state.timelineViewport.scale || 1);
+      const ch = canvas.clientHeight * (state.timelineViewport.scale || 1);
+      const containerW = rect.width;
+      const containerH = rect.height;
+
+      // If content smaller than container, center it; otherwise clamp between [container - content, 0]
+      let minTx, maxTx, minTy, maxTy;
+      if (cw <= containerW) {
+        minTx = maxTx = Math.round((containerW - cw) / 2);
+      } else {
+        minTx = Math.round(containerW - cw);
+        maxTx = 0;
+      }
+      if (ch <= containerH) {
+        minTy = maxTy = Math.round((containerH - ch) / 2);
+      } else {
+        minTy = Math.round(containerH - ch);
+        maxTy = 0;
+      }
+
+      state.timelineViewport.tx = Math.min(maxTx, Math.max(minTx, state.timelineViewport.tx || 0));
+      state.timelineViewport.ty = Math.min(maxTy, Math.max(minTy, state.timelineViewport.ty || 0));
+    } catch (e) { dbg('clampTimelinePan error: ' + (e && e.message)); }
+  }
+
+  // Create a visual node for an entry at (x,y) (canvas coordinates)
+  function createTimelineNodeForEntry(entry, x, y) {
+    const canvas = ensureTimelineCanvas();
+    if (!canvas) return null;
+    dbg(`timeline: createTimelineNodeForEntry received entry=${entry?.id} x=${x} y=${y}`);
+
+    const nodeId = `tn-${uid()}`;
+    const color = pickColorForEntry(entry);
+
+    const node = document.createElement('div');
+    node.className = 'timeline-node';
+    node.style.left = `${x}px`;
+    node.style.top = `${y}px`;
+    node.style.background = color;
+    node.dataset.nodeId = nodeId;
+    node.dataset.entryId = entry.id;
+
+    const label = document.createElement('div');
+    label.className = 'node-label';
+    label.textContent = entry.title || '(Untitled)';
+
+    const kind = document.createElement('div');
+    kind.className = 'node-kind';
+    kind.textContent = entry.lore_kind || (entry.type || 'lore');
+
+    const leftWrap = document.createElement('div');
+    leftWrap.style.display = 'flex';
+    leftWrap.style.flexDirection = 'column';
+    leftWrap.appendChild(label);
+    leftWrap.appendChild(kind);
+
+    const remove = document.createElement('button');
+    remove.className = 'remove-btn';
+    remove.title = 'Remove from timeline';
+    remove.textContent = '×';
+    remove.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      removeTimelineNode(nodeId);
+    });
+
+    node.appendChild(leftWrap);
+    node.appendChild(remove);
+
+    // Pointer dragging for moving node
+    let dragging = false;
+    let start = { x: 0, y: 0 };
+    let orig = { x: 0, y: 0 };
+    node.addEventListener('pointerdown', (ev) => {
+      // If the pointerdown originated on the remove button, don't start a
+      // node-drag; allow the button's click handler to run normally. This
+      // prevents pointer capture from swallowing the click event for delete.
+      try {
+        if (ev.target && ev.target.closest && ev.target.closest('.remove-btn')) return;
+      } catch (e) { /* best-effort */ }
+      ev.preventDefault();
+      node.setPointerCapture(ev.pointerId);
+      dragging = true;
+      start = { x: ev.clientX, y: ev.clientY };
+      orig = { x: parseInt(node.style.left || 0, 10), y: parseInt(node.style.top || 0, 10) };
+    });
+    node.addEventListener('pointermove', (ev) => {
+      if (!dragging) return;
+      ev.preventDefault();
+      // Movement in client pixels must be converted into logical canvas
+      // deltas by dividing by the current scale.
+      const s = state.timelineViewport.scale || 1;
+      const dx = (ev.clientX - start.x) / s;
+      const dy = (ev.clientY - start.y) / s;
+      const nx = snapToGrid(orig.x + dx, TIMELINE.grid);
+      const ny = snapToGrid(orig.y + dy, TIMELINE.grid);
+      node.style.left = `${nx}px`;
+      node.style.top = `${ny}px`;
+    });
+    node.addEventListener('pointerup', (ev) => {
+      if (!dragging) return;
+      dragging = false;
+      try { node.releasePointerCapture(ev.pointerId); } catch (e) {}
+      // persist in-memory
+      const id = node.dataset.nodeId;
+      state.timelineNodes[id] = state.timelineNodes[id] || {};
+      state.timelineNodes[id].x = parseInt(node.style.left || 0, 10);
+      state.timelineNodes[id].y = parseInt(node.style.top || 0, 10);
+    });
+
+    canvas.appendChild(node);
+
+    // store in-memory
+    state.timelineNodes[nodeId] = { entryId: entry.id, x, y, color };
+    dbg(`timeline: node created id=${nodeId} entry=${entry?.id} pos=${x},${y} color=${color} -> debug.log`);
+    return nodeId;
+  }
+
+  function snapToGrid(v, grid) { return Math.round(v / grid) * grid; }
+
+  function removeTimelineNode(nodeId) {
+    try {
+      const canvas = ensureTimelineCanvas();
+      const node = canvas.querySelector(`[data-node-id="${nodeId}"]`);
+      if (node) node.remove();
+      delete state.timelineNodes[nodeId];
+      dbg(`timeline: node removed id=${nodeId}`);
+    } catch (e) { dbg('removeTimelineNode error: ' + (e && e.message)); }
+  }
+
+  // Handle drop from sidebar entries (they are HTML5 drag sources)
+  function installTimelineDropHandlers() {
+    const canvas = ensureTimelineCanvas();
+    if (!canvas) return;
+
+    // Avoid installing handlers multiple times (initTimelineHandlers is called
+    // repeatedly during startup). Mark the canvas once handlers are installed.
+    if (canvas.dataset.tlHandlersInstalled) {
+      dbg('installTimelineDropHandlers: handlers already installed — skipping');
+      return;
+    }
+    canvas.dataset.tlHandlersInstalled = '1';
+
+    canvas.addEventListener('dragover', (ev) => {
+      // allow drop; log for debugging
+      dbg(`timeline: dragover at client=${ev.clientX},${ev.clientY}`);
+      ev.preventDefault(); // allow drop
+    });
+
+    canvas.addEventListener('drop', (ev) => {
+      ev.preventDefault();
+      try {
+        const data = ev.dataTransfer.getData('text/plain');
+        dbg(`timeline: drop event data='${String(data)}' at client=${ev.clientX},${ev.clientY}`);
+        if (!data) return;
+        // data may be entry id
+        const entryId = isNaN(Number(data)) ? data : Number(data);
+        const entry = findEntryByKey(entryId) || state.entries.find(e => e.id === entryId || String(e.id) === String(entryId));
+        dbg(`timeline: resolved entry for drop -> ${entry ? `id=${entry.id} type=${entry.type}` : 'null'}`);
+        if (!entry) { dbg('timeline: drop ignored — no entry resolved'); return; }
+
+        // compute canvas-local logical coordinates accounting for transform
+        const local = clientToCanvas(ev.clientX, ev.clientY);
+        const localX = snapToGrid(local.x, TIMELINE.grid);
+        const localY = snapToGrid(local.y, TIMELINE.grid);
+
+        dbg(`timeline: creating node for entry=${entry.id} at local=${localX},${localY}`);
+        createTimelineNodeForEntry(entry, localX, localY);
+      } catch (e) { dbg('timeline drop error: ' + (e && e.message)); }
+    });
+  }
+
+  // Initialize timeline handlers after DOM ready; also attempt immediately and add a short fallback
+  function initTimelineHandlers() {
+    try { installTimelineDropHandlers(); } catch (e) { dbg('installTimelineDropHandlers failed: ' + (e && e.message)); }
+    // Ensure transform initialised
+    setTimelineTransform();
+    // Install wheel zoom and middle-button pan handlers on the canvas (single install)
+    try {
+      const canvas = ensureTimelineCanvas();
+      if (canvas && !canvas.dataset.tlPanZoomInstalled) {
+        canvas.dataset.tlPanZoomInstalled = '1';
+
+        // Wheel: plain wheel -> zoom centered on viewport center; Ctrl+wheel -> zoom at mouse
+        canvas.addEventListener('wheel', (ev) => {
+          try {
+            ev.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+            const delta = ev.deltaY;
+            const factor = delta < 0 ? 1.12 : 1 / 1.12;
+            const cur = state.timelineViewport.scale || 1;
+            const target = cur * factor;
+            if (ev.ctrlKey || ev.metaKey) {
+              setTimelineScale(target, ev.clientX, ev.clientY);
+            } else {
+              setTimelineScale(target, centerX, centerY);
+            }
+          } catch (e) { dbg('timeline wheel error: ' + (e && e.message)); }
+        }, { passive: false });
+
+        // Middle-button panning (pointer events)
+        let panning = false;
+        let panStart = { x: 0, y: 0 };
+        let panOrig = { tx: 0, ty: 0 };
+        canvas.addEventListener('pointerdown', (ev) => {
+          try {
+            if (ev.button !== 1) return; // only middle button
+            ev.preventDefault();
+            canvas.setPointerCapture(ev.pointerId);
+            panning = true;
+            panStart = { x: ev.clientX, y: ev.clientY };
+            panOrig = { tx: state.timelineViewport.tx || 0, ty: state.timelineViewport.ty || 0 };
+          } catch (e) { /* best-effort */ }
+        });
+        canvas.addEventListener('pointermove', (ev) => {
+          try {
+            if (!panning) return;
+            ev.preventDefault();
+            const dx = ev.clientX - panStart.x;
+            const dy = ev.clientY - panStart.y;
+            state.timelineViewport.tx = Math.round(panOrig.tx + dx);
+            state.timelineViewport.ty = Math.round(panOrig.ty + dy);
+            // clamp to container so we can't pan under UI
+            clampTimelinePan();
+            setTimelineTransform();
+          } catch (e) { /* best-effort */ }
+        });
+        canvas.addEventListener('pointerup', (ev) => {
+          try {
+            if (!panning) return;
+            panning = false;
+            try { canvas.releasePointerCapture(ev.pointerId); } catch (__) {}
+          } catch (e) { /* best-effort */ }
+        });
+      }
+    } catch (e) { dbg('install pan/zoom handlers failed: ' + (e && e.message)); }
+  }
+
+  // Try immediately (if canvas already present)
+  initTimelineHandlers();
+
+  // Also bind to DOMContentLoaded in case elements are added later
+  document.addEventListener('DOMContentLoaded', initTimelineHandlers);
+
+  // Fallback attempt after a short delay in case of timing issues
+  setTimeout(initTimelineHandlers, 500);
 
   // Top-level document capture handler as a safety net: handle clicks on
   // writing tabs even if other binding steps fail or run too late. This is
@@ -1560,7 +1901,16 @@ function saveUIPrefsDebounced() {
       li.addEventListener("dragstart", (ev) => {
         state.drag.draggingId = e.id;
         li.classList.add("dragging");
-        ev.dataTransfer.setData("text/plain", e.id);
+        // Use a stable entry key (prefers code when available) so drop resolution
+        // can unambiguously find the same entry across types (lore, chapter, etc.).
+        try {
+          const payload = entryKey(e);
+          dbg(`renderList: dragstart payload='${String(payload)}' for id=${e.id} type=${e.type}`);
+          ev.dataTransfer.setData("text/plain", payload);
+        } catch (ex) {
+          // Fallback to numeric id if something unexpected happens
+          ev.dataTransfer.setData("text/plain", e.id);
+        }
         ev.dataTransfer.effectAllowed = "move";
       });
 
@@ -3802,6 +4152,35 @@ if (!state.currentProjectDir || !state.workspacePath) {
     ipcRenderer.on('menu:delete', () => {
       const cur = findEntryByKey(state.selectedId);
       if (cur) confirmAndDelete(cur.id);
+    });
+    // Timeline menu controls: zoom in/out/reset
+    try { ipcRenderer.removeAllListeners && ipcRenderer.removeAllListeners('menu:timelineZoomIn'); } catch (e) {}
+    ipcRenderer.on('menu:timelineZoomIn', () => {
+      try {
+        const cur = state.timelineViewport.scale || 1;
+        // Zoom centered on viewport center
+        const canvas = ensureTimelineCanvas();
+        const rect = canvas ? canvas.getBoundingClientRect() : { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+        setTimelineScale(cur * 1.15, rect.left + rect.width / 2, rect.top + rect.height / 2);
+      } catch (e) { dbg('menu:timelineZoomIn handler failed: ' + (e && e.message)); }
+    });
+    try { ipcRenderer.removeAllListeners && ipcRenderer.removeAllListeners('menu:timelineZoomOut'); } catch (e) {}
+    ipcRenderer.on('menu:timelineZoomOut', () => {
+      try {
+        const cur = state.timelineViewport.scale || 1;
+        const canvas = ensureTimelineCanvas();
+        const rect = canvas ? canvas.getBoundingClientRect() : { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+        setTimelineScale(cur / 1.15, rect.left + rect.width / 2, rect.top + rect.height / 2);
+      } catch (e) { dbg('menu:timelineZoomOut handler failed: ' + (e && e.message)); }
+    });
+    try { ipcRenderer.removeAllListeners && ipcRenderer.removeAllListeners('menu:timelineReset'); } catch (e) {}
+    ipcRenderer.on('menu:timelineReset', () => {
+      try {
+        state.timelineViewport.scale = 1;
+        state.timelineViewport.tx = 0;
+        state.timelineViewport.ty = 0;
+        setTimelineTransform();
+      } catch (e) { dbg('menu:timelineReset handler failed: ' + (e && e.message)); }
     });
   } catch (e) { dbg(`Failed to register menu:delete handler: ${e?.message || e}`); }
 

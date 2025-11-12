@@ -197,9 +197,10 @@
         </div>
       </section>
       
-      <!-- Timeline Pane (empty for now) -->
+      <!-- Timeline Pane -->
       <section class="timeline hidden" id="timeline" aria-label="Timeline">
-        <div style="padding:16px; color:var(--muted);">Timeline view (empty)</div>
+        <!-- Canvas: absolutely-positioned nodes will be placed inside -->
+        <div id="timeline-canvas" class="timeline-canvas" tabindex="0" aria-label="Timeline canvas"></div>
       </section>
     </main>
   </div>
