@@ -736,6 +736,39 @@ body.theme-slate .body {
 
 .timeline-node .remove-btn:hover { background: rgba(255,255,255,0.28); }
 
+/* Color control inside timeline node */
+.timeline-node .color-btn {
+  background: rgba(255,255,255,0.18);
+  border: none;
+  color: #fff;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  display: inline-grid;
+  place-items: center;
+  font-weight: 700;
+  cursor: pointer;
+  margin-right: 6px;
+}
+.timeline-node .color-btn:hover { background: rgba(255,255,255,0.28); }
+
+.timeline-node .color-panel {
+  position: absolute;
+  left: 8px;
+  bottom: calc(100% + 8px);
+  background: #fff;
+  color: #111;
+  padding: 8px;
+  border-radius: 8px;
+  box-shadow: 0 8px 30px rgba(0,0,0,.18);
+  z-index: 1000;
+  display: none;
+  width: 180px;
+}
+.timeline-node .color-panel.visible { display: block; }
+.timeline-node .color-panel input[type="range"] { width: 100%; }
+.timeline-node .color-swatch { width: 28px; height: 20px; border-radius: 6px; border: 1px solid rgba(0,0,0,.06); display:inline-block; vertical-align:middle; margin-left:8px; }
+
 /* NEW: Danger button styling */
 .btn.danger {
   border-color: var(--danger);

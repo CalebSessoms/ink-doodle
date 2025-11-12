@@ -832,6 +832,83 @@ async function _wireDebugLogPathEarly() {
       removeTimelineNode(nodeId);
     });
 
+    // Color picker control (inline, expands a small hue slider)
+    const colorBtn = document.createElement('button');
+    colorBtn.className = 'color-btn';
+    colorBtn.title = 'Change color';
+    colorBtn.textContent = '◐';
+
+    const colorPanel = document.createElement('div');
+    colorPanel.className = 'color-panel';
+
+    const hueInput = document.createElement('input');
+    hueInput.type = 'range';
+    hueInput.min = 0; hueInput.max = 360; hueInput.step = 1;
+
+    const swatch = document.createElement('span');
+    swatch.className = 'color-swatch';
+
+    colorPanel.appendChild(hueInput);
+    colorPanel.appendChild(swatch);
+
+    // helpers: HSL <-> HEX
+    function hslToRgb(h, s, l) {
+      s /= 100; l /= 100;
+      const k = n => (n + h / 30) % 12;
+      const a = s * Math.min(l, 1 - l);
+      const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+      return { r: Math.round(255 * f(0)), g: Math.round(255 * f(8)), b: Math.round(255 * f(4)) };
+    }
+    function rgbToHex(r,g,b){ return '#'+ [r,g,b].map(x => x.toString(16).padStart(2,'0')).join(''); }
+    function hexToRgbObj(hex) { const c = hex.replace('#',''); return { r: parseInt(c.slice(0,2),16), g: parseInt(c.slice(2,4),16), b: parseInt(c.slice(4,6),16) }; }
+    function rgbToHsl(r,g,b){ r/=255; g/=255; b/=255; const max=Math.max(r,g,b), min=Math.min(r,g,b); let h=0,s=0,l=(max+min)/2; if(max!==min){ const d=max-min; s = l>0.5? d/(2-max-min) : d/(max+min); switch(max){ case r: h=(g-b)/d + (g<b?6:0); break; case g: h=(b-r)/d + 2; break; case b: h=(r-g)/d + 4; break; } h = Math.round(h*60); } return { h: h, s: Math.round(s*100), l: Math.round(l*100) } }
+
+    // initialize color value (use stored if present)
+    let initialHue = 220; // fallback
+    try {
+      const existing = state.timelineNodes && state.timelineNodes[nodeId] && state.timelineNodes[nodeId].color;
+      if (existing) {
+        // convert hex -> hsl
+        const rgb = hexToRgbObj(existing);
+        const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+        initialHue = Number.isFinite(hsl.h) ? hsl.h : initialHue;
+      } else {
+        // pick base color and derive hue
+        const base = pickColorForEntry(entry);
+        const rgb = hexToRgb(base);
+        const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+        initialHue = Number.isFinite(hsl.h) ? hsl.h : initialHue;
+      }
+    } catch (e) { /* best-effort */ }
+
+    hueInput.value = initialHue;
+    const applyHue = (h) => {
+      const rgb = hslToRgb(Number(h), 75, 50);
+      const hex = rgbToHex(rgb.r, rgb.g, rgb.b);
+      node.style.background = hex;
+      swatch.style.background = hex;
+      // store in-memory
+      state.timelineNodes[nodeId] = state.timelineNodes[nodeId] || {};
+      state.timelineNodes[nodeId].color = hex;
+    };
+    applyHue(initialHue);
+
+    hueInput.addEventListener('input', (ev) => {
+      ev.stopPropagation();
+      applyHue(ev.target.value);
+    });
+
+    // toggle panel
+    colorBtn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      colorPanel.classList.toggle('visible');
+    });
+
+    // close panel when clicking elsewhere
+    document.addEventListener('click', (ev) => {
+      try { if (!colorPanel.contains(ev.target) && !colorBtn.contains(ev.target)) colorPanel.classList.remove('visible'); } catch (e) {}
+    });
+
     node.appendChild(leftWrap);
     node.appendChild(remove);
 
@@ -840,11 +917,12 @@ async function _wireDebugLogPathEarly() {
     let start = { x: 0, y: 0 };
     let orig = { x: 0, y: 0 };
     node.addEventListener('pointerdown', (ev) => {
-      // If the pointerdown originated on the remove button, don't start a
-      // node-drag; allow the button's click handler to run normally. This
-      // prevents pointer capture from swallowing the click event for delete.
+      // If pointerdown originated on the remove button or color controls,
+      // don't start a node-drag; let those controls handle the event.
       try {
-        if (ev.target && ev.target.closest && ev.target.closest('.remove-btn')) return;
+        if (ev.target && ev.target.closest) {
+          if (ev.target.closest('.remove-btn') || ev.target.closest('.color-btn') || ev.target.closest('.color-panel')) return;
+        }
       } catch (e) { /* best-effort */ }
       ev.preventDefault();
       node.setPointerCapture(ev.pointerId);
@@ -877,6 +955,10 @@ async function _wireDebugLogPathEarly() {
     });
 
     canvas.appendChild(node);
+
+  // Attach color button/panel to node (after append so absolute positions work)
+  node.appendChild(colorBtn);
+  node.appendChild(colorPanel);
 
     // store in-memory
     state.timelineNodes[nodeId] = { entryId: entry.id, x, y, color };
