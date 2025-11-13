@@ -683,7 +683,7 @@ async function _wireDebugLogPathEarly() {
 
   // Timeline config
   const TIMELINE = {
-    grid: 12, // pixels (fine, invisible grid)
+    grid: 6, // pixels (finer snap for smoother movement)
     palette: [ '#FF3B30', '#FF9500', '#FFCC00', '#34C759', '#0A84FF', '#5856D6', '#AF52DE' ],
     jitter: 8 // hue/saturation jitter amount
   };
@@ -741,6 +741,8 @@ async function _wireDebugLogPathEarly() {
 
   // Links model: store link objects and render them in an SVG overlay
   state.timelineLinks = {}; // { linkId: { from: nodeId, to: nodeId } }
+  // Selection model: ids of nodes currently selected (for box-select / group-move)
+  state.timelineSelection = { ids: [] };
 
   function ensureTimelineSVG() {
     const canvas = ensureTimelineCanvas();
@@ -909,6 +911,9 @@ async function _wireDebugLogPathEarly() {
   let _tempLink = { active: false, svgPath: null, fromNode: null, fromHandle: null };
   // Drag state for moving an existing link's control points as a unit
   let _dragLink = { active: false, linkId: null, startCanvas: null, startOffset: null };
+  // Box-selection state and group-drag state
+  let _boxSelect = { active: false, rectEl: null, startCanvas: null };
+  let _groupDrag = { active: false, nodeIds: [], startClientX: 0, startClientY: 0, startPositions: {} };
 
   // Helpers to manage handles per-node
   function addHandleToNode(nodeId, used, side = 'right') {
@@ -1081,6 +1086,130 @@ async function _wireDebugLogPathEarly() {
     } catch (e) { dbg('finishLinkDrag handle update error: ' + (e && e.message)); }
 
     renderAllLinks();
+  }
+
+  // Selection helpers (box-select + group move)
+  function clearTimelineSelection() {
+    try {
+      const prev = state.timelineSelection && state.timelineSelection.ids ? state.timelineSelection.ids : [];
+      for (const id of prev) {
+        const el = getNodeElement(id);
+        if (el) el.classList.remove('multi-selected');
+      }
+    } catch (e) { /* best-effort */ }
+    state.timelineSelection = { ids: [] };
+    // hide rect if present
+    try { if (_boxSelect.rectEl) _boxSelect.rectEl.classList.remove('visible'); } catch (e) {}
+  }
+
+  function selectAllTimelineNodes() {
+    const ids = Object.keys(state.timelineNodes || {});
+    state.timelineSelection.ids = ids.slice();
+    for (const id of ids) {
+      const el = getNodeElement(id);
+      if (el) el.classList.add('multi-selected');
+    }
+  }
+
+  function _installBoxSelectHandlers(canvas) {
+    if (!canvas) return;
+    if (canvas.dataset.tlBoxSelectInstalled) return;
+    canvas.dataset.tlBoxSelectInstalled = '1';
+
+    // ensure selection rect element exists
+    if (!_boxSelect.rectEl) {
+      const r = document.createElement('div');
+      r.className = 'timeline-selection-rect';
+      r.style.position = 'absolute';
+      r.style.left = '0px'; r.style.top = '0px'; r.style.width = '0px'; r.style.height = '0px';
+      r.style.pointerEvents = 'none';
+      canvas.appendChild(r);
+      _boxSelect.rectEl = r;
+    }
+
+    canvas.addEventListener('pointerdown', (ev) => {
+      try {
+        if (ev.button !== 0) return; // left only
+        // If user clicked on a node, handle, link path, or interactive control, don't start box-select here
+        const tgt = ev.target && ev.target.closest ? ev.target.closest('.timeline-node, .conn-handle, .color-btn, .color-panel') : null;
+        if (tgt) return;
+        // Ignore pointerdown on SVG link paths (they use .link/.interactive)
+        const linkHit = ev.target && ev.target.closest ? ev.target.closest('path.link, .link, path.temp, .temp') : null;
+        if (linkHit) {
+          dbg('box-select: pointerdown ignored on SVG link path');
+          return;
+        }
+        // Start box select
+        ev.preventDefault();
+        _boxSelect.active = true;
+        _boxSelect.startCanvas = clientToCanvas(ev.clientX, ev.clientY);
+        const r = _boxSelect.rectEl;
+        if (r) {
+          r.classList.add('visible');
+          r.style.left = `${_boxSelect.startCanvas.x}px`;
+          r.style.top = `${_boxSelect.startCanvas.y}px`;
+          r.style.width = '0px'; r.style.height = '0px';
+        }
+      } catch (e) { dbg('box select start error: ' + (e && e.message)); }
+    });
+
+    window.addEventListener('pointermove', (ev) => {
+      try {
+        if (!_boxSelect.active) return;
+        ev.preventDefault();
+        const cur = clientToCanvas(ev.clientX, ev.clientY);
+        const sx = Math.min(_boxSelect.startCanvas.x, cur.x);
+        const sy = Math.min(_boxSelect.startCanvas.y, cur.y);
+        const w = Math.abs(cur.x - _boxSelect.startCanvas.x);
+        const h = Math.abs(cur.y - _boxSelect.startCanvas.y);
+        const r = _boxSelect.rectEl;
+        if (r) {
+          r.style.left = `${sx}px`;
+          r.style.top = `${sy}px`;
+          r.style.width = `${w}px`;
+          r.style.height = `${h}px`;
+        }
+      } catch (e) { /* best-effort */ }
+    });
+
+    window.addEventListener('pointerup', (ev) => {
+      try {
+        if (!_boxSelect.active) return;
+        _boxSelect.active = false;
+        const r = _boxSelect.rectEl;
+        if (!r) return;
+        // compute selection rect in canvas logical coords
+        const rx = parseFloat(r.style.left || 0);
+        const ry = parseFloat(r.style.top || 0);
+        const rw = parseFloat(r.style.width || 0);
+        const rh = parseFloat(r.style.height || 0);
+        // clear previous selection
+        clearTimelineSelection();
+        const ids = [];
+        for (const nid in state.timelineNodes) {
+          try {
+            const nodeEl = getNodeElement(nid);
+            if (!nodeEl) continue;
+            const nx = parseInt(nodeEl.style.left || 0, 10);
+            const ny = parseInt(nodeEl.style.top || 0, 10);
+            const nw = nodeEl.offsetWidth || 0;
+            const nh = nodeEl.offsetHeight || 0;
+            // Intersect test in logical coords
+            const overlap = !(nx + nw < rx || nx > rx + rw || ny + nh < ry || ny > ry + rh);
+            if (overlap) {
+              ids.push(nid);
+            }
+          } catch (e) { /* best-effort */ }
+        }
+        state.timelineSelection.ids = ids;
+        for (const id of ids) {
+          const el = getNodeElement(id);
+          if (el) el.classList.add('multi-selected');
+        }
+        // hide rectangle
+        r.classList.remove('visible');
+      } catch (e) { dbg('box select finish error: ' + (e && e.message)); }
+    });
   }
 
   // Zoom helper: keep the logical point under (clientX,clientY) stable when scaling
@@ -1259,9 +1388,9 @@ async function _wireDebugLogPathEarly() {
     node.appendChild(remove);
 
     // Pointer dragging for moving node
-    let dragging = false;
-    let start = { x: 0, y: 0 };
-    let orig = { x: 0, y: 0 };
+  let dragging = false;
+  let start = { x: 0, y: 0 };
+  let orig = { x: 0, y: 0 };
     node.addEventListener('pointerdown', (ev) => {
       // If pointerdown originated on the remove button or color controls,
       // don't start a node-drag; let those controls handle the event.
@@ -1270,36 +1399,107 @@ async function _wireDebugLogPathEarly() {
           if (ev.target.closest('.remove-btn') || ev.target.closest('.color-btn') || ev.target.closest('.color-panel') || ev.target.closest('.conn-handle')) return;
         }
       } catch (e) { /* best-effort */ }
-      ev.preventDefault();
-      node.setPointerCapture(ev.pointerId);
+  ev.preventDefault();
+  node.setPointerCapture(ev.pointerId);
+  const nodeId = node.dataset.nodeId;
+      // If this node is part of the selection, start a group drag
+      if (state.timelineSelection && Array.isArray(state.timelineSelection.ids) && state.timelineSelection.ids.includes(nodeId)) {
+        _groupDrag.active = true;
+        _groupDrag.nodeIds = state.timelineSelection.ids.slice();
+        _groupDrag.startClientX = ev.clientX;
+        _groupDrag.startClientY = ev.clientY;
+        _groupDrag.startPositions = {};
+        for (const nid of _groupDrag.nodeIds) {
+          const eln = getNodeElement(nid);
+          if (eln) _groupDrag.startPositions[nid] = { x: parseInt(eln.style.left || 0, 10), y: parseInt(eln.style.top || 0, 10) };
+        }
+        // don't start single-node dragging
+        return;
+      }
+
+      // Single-node drag (fallback)
       dragging = true;
+      // store raw client start and precise origin (float) for free dragging
       start = { x: ev.clientX, y: ev.clientY };
-      orig = { x: parseInt(node.style.left || 0, 10), y: parseInt(node.style.top || 0, 10) };
+      orig = { x: parseFloat(node.style.left || 0), y: parseFloat(node.style.top || 0) };
     });
     node.addEventListener('pointermove', (ev) => {
+      if (_groupDrag.active) {
+        ev.preventDefault();
+        const s = state.timelineViewport.scale || 1;
+        const dx = (ev.clientX - _groupDrag.startClientX) / s;
+        const dy = (ev.clientY - _groupDrag.startClientY) / s;
+        for (const nid of _groupDrag.nodeIds) {
+          try {
+            const pos = _groupDrag.startPositions[nid];
+            if (!pos) continue;
+            // free-drag: do not snap while moving
+            const nx = pos.x + dx;
+            const ny = pos.y + dy;
+            const eln = getNodeElement(nid);
+            if (eln) { eln.style.left = `${nx}px`; eln.style.top = `${ny}px`; }
+          } catch (e) { /* best-effort per node */ }
+        }
+        try { renderAllLinks(); } catch (e) { /* best-effort */ }
+        return;
+      }
+
       if (!dragging) return;
       ev.preventDefault();
-      // Movement in client pixels must be converted into logical canvas
-      // deltas by dividing by the current scale.
+      // Movement: free dragging (no per-frame snap), compute logical delta
       const s = state.timelineViewport.scale || 1;
       const dx = (ev.clientX - start.x) / s;
       const dy = (ev.clientY - start.y) / s;
-      const nx = snapToGrid(orig.x + dx, TIMELINE.grid);
-      const ny = snapToGrid(orig.y + dy, TIMELINE.grid);
+      const nx = orig.x + dx;
+      const ny = orig.y + dy;
       node.style.left = `${nx}px`;
       node.style.top = `${ny}px`;
       // update link visuals while dragging
       try { renderAllLinks(); } catch (e) { /* best-effort */ }
     });
     node.addEventListener('pointerup', (ev) => {
+      // If group dragging, persist all moved nodes
+      if (_groupDrag.active) {
+        _groupDrag.active = false;
+        try { node.releasePointerCapture(ev.pointerId); } catch (e) {}
+        for (const nid of _groupDrag.nodeIds) {
+          try {
+            const eln = getNodeElement(nid);
+            if (!eln) continue;
+            // snap to grid on drop
+            const px = parseFloat(eln.style.left || 0);
+            const py = parseFloat(eln.style.top || 0);
+            const sx = snapToGrid(px, TIMELINE.grid);
+            const sy = snapToGrid(py, TIMELINE.grid);
+            eln.style.left = `${sx}px`;
+            eln.style.top = `${sy}px`;
+            state.timelineNodes[nid] = state.timelineNodes[nid] || {};
+            state.timelineNodes[nid].x = sx;
+            state.timelineNodes[nid].y = sy;
+          } catch (e) { /* best-effort */ }
+        }
+        _groupDrag.nodeIds = [];
+        _groupDrag.startPositions = {};
+        try { renderAllLinks(); } catch (e) { /* best-effort */ }
+        return;
+      }
       if (!dragging) return;
       dragging = false;
       try { node.releasePointerCapture(ev.pointerId); } catch (e) {}
-      // persist in-memory
-      const id = node.dataset.nodeId;
-      state.timelineNodes[id] = state.timelineNodes[id] || {};
-      state.timelineNodes[id].x = parseInt(node.style.left || 0, 10);
-      state.timelineNodes[id].y = parseInt(node.style.top || 0, 10);
+      // snap final position to grid and persist
+      try {
+        const id = node.dataset.nodeId;
+        const px = parseFloat(node.style.left || 0);
+        const py = parseFloat(node.style.top || 0);
+        const sx = snapToGrid(px, TIMELINE.grid);
+        const sy = snapToGrid(py, TIMELINE.grid);
+        node.style.left = `${sx}px`;
+        node.style.top = `${sy}px`;
+        state.timelineNodes[id] = state.timelineNodes[id] || {};
+        state.timelineNodes[id].x = sx;
+        state.timelineNodes[id].y = sy;
+        try { renderAllLinks(); } catch (e) { /* best-effort */ }
+      } catch (e) { /* best-effort */ }
     });
 
   canvas.appendChild(node);
@@ -1427,6 +1627,23 @@ async function _wireDebugLogPathEarly() {
     try { installTimelineDropHandlers(); } catch (e) { dbg('installTimelineDropHandlers failed: ' + (e && e.message)); }
     // Ensure transform initialised
     setTimelineTransform();
+    // ensure box-select handlers are installed for the canvas
+    try { _installBoxSelectHandlers(ensureTimelineCanvas()); } catch (e) { dbg('installBoxSelectHandlers failed: ' + (e && e.message)); }
+
+    // Keyboard shortcuts for selection
+    try {
+      document.addEventListener('keydown', (ev) => {
+        // Escape clears selection
+        if (ev.key === 'Escape') {
+          clearTimelineSelection();
+        }
+        // Ctrl/Cmd + A selects all
+        if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'a') {
+          ev.preventDefault();
+          selectAllTimelineNodes();
+        }
+      });
+    } catch (e) { /* best-effort */ }
     // Install wheel zoom and middle-button pan handlers on the canvas (single install)
     try {
       const canvas = ensureTimelineCanvas();

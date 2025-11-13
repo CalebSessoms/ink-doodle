@@ -793,6 +793,23 @@ body.theme-slate .body {
 .timeline-svg path.link.interactive { cursor: grab; pointer-events: auto; }
 .timeline-svg path.link.interactive:active { cursor: grabbing; }
 
+/* Box-selection rectangle */
+.timeline-selection-rect {
+  border: 2px dashed rgba(59,130,246,0.9);
+  background: rgba(99,102,241,0.08);
+  border-radius: 6px;
+  display: none;
+  z-index: 9000; /* above nodes inside canvas */
+}
+.timeline-selection-rect.visible { display: block; }
+
+/* Multi-selected node appearance */
+.timeline-node.multi-selected {
+  box-shadow: 0 8px 30px rgba(16,185,129,0.12);
+  transform: translateZ(0);
+  outline: 2px solid rgba(16,185,129,0.18);
+}
+
 /* NEW: Danger button styling */
 .btn.danger {
   border-color: var(--danger);
