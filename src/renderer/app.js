@@ -739,6 +739,350 @@ async function _wireDebugLogPathEarly() {
     return { x: lx, y: ly };
   }
 
+  // Links model: store link objects and render them in an SVG overlay
+  state.timelineLinks = {}; // { linkId: { from: nodeId, to: nodeId } }
+
+  function ensureTimelineSVG() {
+    const canvas = ensureTimelineCanvas();
+    if (!canvas) return null;
+    let svg = canvas.querySelector('svg.timeline-svg');
+    if (!svg) {
+      svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.classList.add('timeline-svg');
+      svg.setAttribute('width', '100%');
+      svg.setAttribute('height', '100%');
+      svg.setAttribute('preserveAspectRatio', 'none');
+      canvas.insertBefore(svg, canvas.firstChild);
+    }
+    return svg;
+  }
+
+  function getNodeElement(nodeId) {
+    const canvas = ensureTimelineCanvas();
+    if (!canvas) return null;
+    return canvas.querySelector(`[data-node-id="${nodeId}"]`);
+  }
+
+  // Compute logical canvas position for a specific handle id by locating the
+  // handle DOM element and converting its client center to canvas coords.
+  function getHandlePositionOfNode(handleId) {
+    try {
+      if (!handleId) return null;
+      const el = document.querySelector(`[data-handle-id="${handleId}"]`);
+      if (!el) return null;
+      const rect = el.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      return clientToCanvas(cx, cy);
+    } catch (e) {
+      dbg('getHandlePositionOfNode error: ' + (e && e.message));
+      return null;
+    }
+  }
+
+  function drawLinkPath(svg, fromPt, toPt, cls = 'link') {
+    // wrapper to create an SVG path element from a precomputed d string
+    const d = computeLinkD(fromPt, toPt, { x: 0, y: 0 });
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', d);
+    path.classList.add(cls);
+    return path;
+  }
+
+  // Compute the cubic-bezier path `d` string for a link between two points.
+  // cpOffset translates both control points (does not move anchors) so the
+  // overall curve shape can be shifted without moving endpoints.
+  function computeLinkD(fromPt, toPt, cpOffset) {
+    cpOffset = cpOffset || { x: 0, y: 0 };
+    const dx = Math.max(60, Math.abs(toPt.x - fromPt.x));
+    let c1x = fromPt.x + dx * 0.35;
+    let c1y = fromPt.y;
+    let c2x = toPt.x - dx * 0.35;
+    let c2y = toPt.y;
+    c1x += cpOffset.x; c1y += cpOffset.y;
+    c2x += cpOffset.x; c2y += cpOffset.y;
+    return `M ${fromPt.x} ${fromPt.y} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${toPt.x} ${toPt.y}`;
+  }
+
+  function renderAllLinks() {
+    const svg = ensureTimelineSVG();
+    if (!svg) return;
+    dbg(`timeline: renderAllLinks count=${Object.keys(state.timelineLinks || {}).length}`);
+    // clear existing persistent paths
+    svg.querySelectorAll('path.link').forEach(p => p.remove());
+    // ensure link-drag handlers installed once
+    if (!window._tlLinkDragHandlersInstalled) {
+      window._tlLinkDragHandlersInstalled = true;
+      // pointermove/up handle for active link drags
+      window.addEventListener('pointermove', (ev) => {
+        try {
+          if (!_dragLink.active) return;
+          ev.preventDefault();
+          const cur = clientToCanvas(ev.clientX, ev.clientY);
+          const start = _dragLink.startCanvas || cur;
+          const dx = cur.x - start.x;
+          const dy = cur.y - start.y;
+          const lid = _dragLink.linkId;
+          if (!lid || !state.timelineLinks[lid]) return;
+          const base = _dragLink.startOffset || { x: 0, y: 0 };
+          const newOffset = { x: base.x + dx, y: base.y + dy };
+          state.timelineLinks[lid].cpOffset = newOffset;
+          // update the specific path element if present
+          try {
+            const svgEl = ensureTimelineSVG();
+            const path = svgEl && svgEl.querySelector ? svgEl.querySelector(`path.link[data-link-id="${lid}"]`) : null;
+            if (path) {
+              const ln = state.timelineLinks[lid];
+              const a = getHandlePositionOfNode(ln.fromHandle || ln.fromNode);
+              const b = getHandlePositionOfNode(ln.toHandle || ln.toNode);
+              if (a && b) {
+                const d = computeLinkD(a, b, ln.cpOffset || { x: 0, y: 0 });
+                path.setAttribute('d', d);
+              }
+            }
+          } catch (e) { /* best-effort */ }
+        } catch (e) { dbg('link drag move error: ' + (e && e.message)); }
+      });
+      window.addEventListener('pointerup', (ev) => {
+        try {
+          if (!_dragLink.active) return;
+          _dragLink.active = false;
+          const lid = _dragLink.linkId;
+          _dragLink.linkId = null;
+          _dragLink.startCanvas = null;
+          _dragLink.startOffset = null;
+          // Try to release pointer capture on the active element if possible
+          try {
+            const svgEl = ensureTimelineSVG();
+            const p = svgEl && svgEl.querySelector ? svgEl.querySelector(`path.link[data-link-id="${lid}"]`) : null;
+            if (p && ev.pointerId) try { p.releasePointerCapture(ev.pointerId); } catch (_) {}
+          } catch (e) {}
+          dbg(`timeline: link drag finished ${lid}`);
+        } catch (e) { dbg('link drag up error: ' + (e && e.message)); }
+      });
+    }
+
+    for (const lid in state.timelineLinks) {
+      const ln = state.timelineLinks[lid];
+      const a = getHandlePositionOfNode(ln.fromHandle || ln.fromNode);
+      const b = getHandlePositionOfNode(ln.toHandle || ln.toNode);
+      if (!a || !b) continue;
+      const cp = ln.cpOffset || { x: 0, y: 0 };
+      const d = computeLinkD(a, b, cp);
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', d);
+      path.classList.add('link');
+      // Make interactive for dragging
+      path.classList.add('interactive');
+      path.dataset.linkId = lid;
+      svg.appendChild(path);
+
+      // pointerdown to start dragging this link as a whole
+      path.addEventListener('pointerdown', (ev) => {
+        try {
+          if (ev.button !== 0) return; // left button only
+          ev.preventDefault();
+          // capture pointer to this path so move events are routed here
+          try { path.setPointerCapture(ev.pointerId); } catch (e) {}
+          _dragLink.active = true;
+          _dragLink.linkId = lid;
+          _dragLink.startCanvas = clientToCanvas(ev.clientX, ev.clientY);
+          _dragLink.startOffset = Object.assign({}, ln.cpOffset || { x: 0, y: 0 });
+          dbg(`timeline: link drag start ${lid} start=${Math.round(_dragLink.startCanvas.x)},${Math.round(_dragLink.startCanvas.y)}`);
+        } catch (e) { dbg('link pointerdown error: ' + (e && e.message)); }
+      });
+    }
+  }
+
+  function getNodeCenterRight(nodeId) {
+    try {
+      const el = getNodeElement(nodeId);
+      if (!el) return null;
+      const rect = el.getBoundingClientRect();
+      const cx = rect.left + rect.width;
+      const cy = rect.top + rect.height / 2;
+      return clientToCanvas(cx, cy);
+    } catch (e) { return null; }
+  }
+
+  // Temporary drag state for creating a link
+  let _tempLink = { active: false, svgPath: null, fromNode: null, fromHandle: null };
+  // Drag state for moving an existing link's control points as a unit
+  let _dragLink = { active: false, linkId: null, startCanvas: null, startOffset: null };
+
+  // Helpers to manage handles per-node
+  function addHandleToNode(nodeId, used, side = 'right') {
+    try {
+      if (!state.timelineNodes[nodeId]) state.timelineNodes[nodeId] = { entryId: null, x: 0, y: 0, color: null, handles: [] };
+      const hid = `h-${uid()}`;
+      state.timelineNodes[nodeId].handles = state.timelineNodes[nodeId].handles || [];
+      const obj = { id: hid, used: !!used, side: side };
+      state.timelineNodes[nodeId].handles.push(obj);
+      // Create DOM element for handle
+      const nodeEl = getNodeElement(nodeId);
+      if (nodeEl) {
+        const hEl = document.createElement('div');
+        hEl.className = 'conn-handle';
+        hEl.dataset.handleId = hid;
+        hEl.dataset.side = side;
+        hEl.classList.add(side);
+        hEl.title = 'Create link';
+        nodeEl.appendChild(hEl);
+        updateHandlesForNode(nodeId);
+      }
+      dbg(`timeline: addHandleToNode node=${nodeId} handle=${hid} used=${!!used}`);
+      return hid;
+    } catch (e) { dbg('addHandleToNode error: ' + (e && e.message)); return null; }
+  }
+
+  function updateHandlesForNode(nodeId) {
+    try {
+      const nodeEl = getNodeElement(nodeId);
+      if (!nodeEl) return;
+      const handles = (state.timelineNodes[nodeId] && state.timelineNodes[nodeId].handles) || [];
+      const els = Array.from(nodeEl.querySelectorAll('.conn-handle'));
+      // If DOM handles don't match state, reconcile: ensure count and data-handle-id
+      // Add missing DOM elements
+      for (const h of handles) {
+        if (!els.find(e => e.dataset.handleId === h.id)) {
+          const hEl = document.createElement('div');
+          hEl.className = 'conn-handle';
+          hEl.dataset.handleId = h.id;
+          hEl.dataset.side = h.side || 'right';
+          hEl.classList.add(h.side || 'right');
+          hEl.title = 'Create link';
+          nodeEl.appendChild(hEl);
+        }
+      }
+      // Re-query and group by side
+      const finalEls = Array.from(nodeEl.querySelectorAll('.conn-handle'));
+      // Adjust node min-height so handles on either side don't overlap.
+      try {
+        const leftCount = handles.filter(h => (h.side || 'right') === 'left').length;
+        const rightCount = handles.filter(h => (h.side || 'right') === 'right').length;
+        const maxCount = Math.max(leftCount, rightCount, 1);
+        const base = 40; // base min height in px
+        const spacing = 20; // px per handle row
+        nodeEl.style.minHeight = `${Math.max(base, Math.round(base + (maxCount - 1) * spacing))}px`;
+      } catch (e) { /* best-effort */ }
+      const sides = ['left','right'];
+      for (const side of sides) {
+        const sideHandles = handles.filter(h => (h.side || 'right') === side);
+        const sideEls = finalEls.filter(e => (e.dataset.side || 'right') === side);
+        const count = Math.max(sideHandles.length, sideEls.length);
+        for (let i = 0; i < sideEls.length; i++) {
+          const el = sideEls[i];
+          // distribute vertically within side group
+          const topPct = ((i + 1) / (count + 1)) * 100;
+          el.style.top = `${topPct}%`;
+          const hid = el.dataset.handleId;
+          const hObj = handles.find(h => h.id === hid) || { used: false, side };
+          el.classList.toggle('used', !!hObj.used);
+          el.dataset.side = hObj.side || side;
+          el.classList.remove('left','right');
+          el.classList.add(hObj.side || side);
+        }
+      }
+    } catch (e) { dbg('updateHandlesForNode error: ' + (e && e.message)); }
+  }
+
+  function startLinkDrag(fromNodeId, fromHandleId) {
+    const svg = ensureTimelineSVG();
+    if (!svg) return;
+    _tempLink.active = true;
+    _tempLink.fromNode = fromNodeId;
+    _tempLink.fromHandle = fromHandleId || null;
+    if (_tempLink.svgPath) try { _tempLink.svgPath.remove(); } catch(e){}
+    _tempLink.svgPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    _tempLink.svgPath.classList.add('temp');
+    svg.appendChild(_tempLink.svgPath);
+    dbg(`timeline: startLinkDrag fromNode=${fromNodeId} fromHandle=${_tempLink.fromHandle || '<none>'}`);
+  }
+
+  function updateTempLink(clientX, clientY) {
+    if (!_tempLink.active || !_tempLink.svgPath) return;
+    // Prefer the explicit handle position if we started from a handle, otherwise
+    // fall back to the center-right of the originating node (obscure case).
+  let fromPos = null;
+  if (_tempLink.fromHandle) fromPos = getHandlePositionOfNode(_tempLink.fromHandle);
+  if (!fromPos && _tempLink.fromNode) fromPos = getNodeCenterRight(_tempLink.fromNode);
+    if (!fromPos) return;
+    const toPos = clientToCanvas(clientX, clientY);
+    const d = computeLinkD(fromPos, toPos, { x: 0, y: 0 });
+    _tempLink.svgPath.setAttribute('d', d);
+    dbg(`timeline: updateTempLink from=${_tempLink.fromNode || '<unknown>'} fromHandle=${_tempLink.fromHandle || '<none>'} toClient=${clientX},${clientY} toCanvas=${Math.round(toPos.x)},${Math.round(toPos.y)}`);
+  }
+
+  function finishLinkDrag(clientX, clientY, targetNodeId, targetHandleId) {
+    if (!_tempLink.active) return;
+    try { if (_tempLink.svgPath) _tempLink.svgPath.remove(); } catch (e) {}
+    _tempLink.active = false;
+    const fromNode = _tempLink.fromNode;
+    const fromHandle = _tempLink.fromHandle || null;
+    _tempLink.fromNode = null;
+    _tempLink.fromHandle = null;
+    dbg(`timeline: finishLinkDrag fromNode=${fromNode} fromHandle=${fromHandle} targetNode=${targetNodeId} targetHandle=${targetHandleId} client=${clientX},${clientY}`);
+    if (!fromNode) return;
+    if (!targetNodeId || targetNodeId === fromNode) {
+      dbg('timeline: finishLinkDrag ignored (no valid target or self-link)');
+      return; // ignore invalid
+    }
+    // Require both a valid source handle (we started from a handle) and a
+    // target handle (user must drop on a connection point). Otherwise ignore.
+    if (!fromHandle) {
+      dbg('timeline: finishLinkDrag ignored - no source handle recorded');
+      return;
+    }
+    if (!targetHandleId) {
+      dbg('timeline: finishLinkDrag ignored - no target handle (must drop on a handle)');
+      return;
+    }
+
+    // Disallow creating a link if either source or target handle is already used
+    try {
+      const srcNode = state.timelineNodes[fromNode];
+      const dstNode = state.timelineNodes[targetNodeId];
+      const srcH = srcNode && srcNode.handles && srcNode.handles.find(h => h.id === fromHandle);
+      const dstH = dstNode && dstNode.handles && dstNode.handles.find(h => h.id === targetHandleId);
+      if (srcH && srcH.used) {
+        dbg(`timeline: finishLinkDrag ignored - source handle already used ${fromHandle} on node ${fromNode}`);
+        return;
+      }
+      if (dstH && dstH.used) {
+        dbg(`timeline: finishLinkDrag ignored - target handle already used ${targetHandleId} on node ${targetNodeId}`);
+        return;
+      }
+    } catch (e) { dbg('finishLinkDrag used-handle check error: ' + (e && e.message)); }
+
+    const srcHandle = fromHandle;
+    const dstHandle = targetHandleId;
+    const lid = `ln-${uid()}`;
+  state.timelineLinks[lid] = { fromNode, fromHandle: srcHandle, toNode: targetNodeId, toHandle: dstHandle, cpOffset: { x: 0, y: 0 } };
+    dbg(`timeline: link created ${lid} ${fromNode}:${srcHandle} -> ${targetNodeId}:${dstHandle}`);
+
+    // Mark both source and target handles used and append new empty handles on the same sides
+    try {
+      // source
+      if (srcHandle && state.timelineNodes[fromNode]) {
+        const h = state.timelineNodes[fromNode].handles.find(h => h.id === srcHandle);
+        const srcSide = h && h.side ? h.side : 'right';
+        if (h) { h.used = true; dbg(`timeline: handle consumed ${srcHandle} on node ${fromNode}`); }
+        const newH = addHandleToNode(fromNode, false, srcSide);
+        dbg(`timeline: appended new empty handle ${newH} to node ${fromNode} side=${srcSide}`);
+      }
+      // target
+      if (dstHandle && state.timelineNodes[targetNodeId]) {
+        const h2 = state.timelineNodes[targetNodeId].handles.find(h => h.id === dstHandle);
+        const dstSide = h2 && h2.side ? h2.side : 'left';
+        if (h2) { h2.used = true; dbg(`timeline: handle consumed ${dstHandle} on node ${targetNodeId}`); }
+        const newH2 = addHandleToNode(targetNodeId, false, dstSide);
+        dbg(`timeline: appended new empty handle ${newH2} to node ${targetNodeId} side=${dstSide}`);
+      }
+    } catch (e) { dbg('finishLinkDrag handle update error: ' + (e && e.message)); }
+
+    renderAllLinks();
+  }
+
   // Zoom helper: keep the logical point under (clientX,clientY) stable when scaling
   function setTimelineScale(newScale, clientX, clientY) {
     const canvas = ensureTimelineCanvas();
@@ -832,6 +1176,8 @@ async function _wireDebugLogPathEarly() {
       removeTimelineNode(nodeId);
     });
 
+  // NOTE: handles are created via addHandleToNode() which also manages state
+
     // Color picker control (inline, expands a small hue slider)
     const colorBtn = document.createElement('button');
     colorBtn.className = 'color-btn';
@@ -921,7 +1267,7 @@ async function _wireDebugLogPathEarly() {
       // don't start a node-drag; let those controls handle the event.
       try {
         if (ev.target && ev.target.closest) {
-          if (ev.target.closest('.remove-btn') || ev.target.closest('.color-btn') || ev.target.closest('.color-panel')) return;
+          if (ev.target.closest('.remove-btn') || ev.target.closest('.color-btn') || ev.target.closest('.color-panel') || ev.target.closest('.conn-handle')) return;
         }
       } catch (e) { /* best-effort */ }
       ev.preventDefault();
@@ -942,6 +1288,8 @@ async function _wireDebugLogPathEarly() {
       const ny = snapToGrid(orig.y + dy, TIMELINE.grid);
       node.style.left = `${nx}px`;
       node.style.top = `${ny}px`;
+      // update link visuals while dragging
+      try { renderAllLinks(); } catch (e) { /* best-effort */ }
     });
     node.addEventListener('pointerup', (ev) => {
       if (!dragging) return;
@@ -954,14 +1302,19 @@ async function _wireDebugLogPathEarly() {
       state.timelineNodes[id].y = parseInt(node.style.top || 0, 10);
     });
 
-    canvas.appendChild(node);
+  canvas.appendChild(node);
 
   // Attach color button/panel to node (after append so absolute positions work)
   node.appendChild(colorBtn);
   node.appendChild(colorPanel);
 
-    // store in-memory
-    state.timelineNodes[nodeId] = { entryId: entry.id, x, y, color };
+    // store in-memory (initialize handles list)
+    state.timelineNodes[nodeId] = { entryId: entry.id, x, y, color, handles: [] };
+    // create the initial empty handles on both sides so user can connect from either side
+    try {
+      addHandleToNode(nodeId, false, 'left');
+      addHandleToNode(nodeId, false, 'right');
+    } catch (e) { dbg('createTimelineNodeForEntry addHandle failed: ' + (e && e.message)); }
     dbg(`timeline: node created id=${nodeId} entry=${entry?.id} pos=${x},${y} color=${color} -> debug.log`);
     return nodeId;
   }
@@ -973,6 +1326,7 @@ async function _wireDebugLogPathEarly() {
       const canvas = ensureTimelineCanvas();
       const node = canvas.querySelector(`[data-node-id="${nodeId}"]`);
       if (node) node.remove();
+  try { renderAllLinks(); } catch (e) { /* best-effort */ }
       delete state.timelineNodes[nodeId];
       dbg(`timeline: node removed id=${nodeId}`);
     } catch (e) { dbg('removeTimelineNode error: ' + (e && e.message)); }
@@ -1018,6 +1372,54 @@ async function _wireDebugLogPathEarly() {
         createTimelineNodeForEntry(entry, localX, localY);
       } catch (e) { dbg('timeline drop error: ' + (e && e.message)); }
     });
+
+    // Connection-handle link creation: pointer events for starting a link
+    if (!canvas.dataset.tlLinkHandlersInstalled) {
+      canvas.dataset.tlLinkHandlersInstalled = '1';
+
+      canvas.addEventListener('pointerdown', (ev) => {
+        try {
+          // Only start link drag when clicking directly on a connection handle
+          if (ev.button !== 0) return; // left button only
+          const target = ev.target && ev.target.closest ? ev.target.closest('.conn-handle') : null;
+          if (!target) return;
+          // Don't start a new link from a handle that's already used
+          if (target.classList && target.classList.contains('used')) {
+            dbg(`timeline: pointerdown on used handle ignored (handle=${target.dataset.handleId})`);
+            return;
+          }
+          const nodeEl = target.closest('.timeline-node');
+          if (!nodeEl) return;
+          const nodeId = nodeEl.dataset.nodeId;
+          const handleId = target.dataset.handleId;
+          if (!nodeId) return;
+          ev.preventDefault();
+          startLinkDrag(nodeId, handleId);
+        } catch (e) { dbg('timeline link pointerdown error: ' + (e && e.message)); }
+      });
+
+      // Global pointermove/up to update/finish temporary link regardless of element capture
+      window.addEventListener('pointermove', (ev) => {
+        try {
+          if (!_tempLink.active) return;
+          ev.preventDefault();
+          updateTempLink(ev.clientX, ev.clientY);
+        } catch (e) { /* best-effort */ }
+      });
+
+      window.addEventListener('pointerup', (ev) => {
+        try {
+          if (!_tempLink.active) return;
+          // Determine if we're over a handle on release
+          const el = document.elementFromPoint(ev.clientX, ev.clientY);
+          const handle = el && el.closest ? el.closest('.conn-handle') : null;
+          const targetNode = handle ? handle.closest('.timeline-node') : null;
+          const targetId = targetNode ? targetNode.dataset.nodeId : null;
+          const targetHandleId = handle ? handle.dataset.handleId : null;
+          finishLinkDrag(ev.clientX, ev.clientY, targetId, targetHandleId);
+        } catch (e) { dbg('timeline link pointerup error: ' + (e && e.message)); }
+      });
+    }
   }
 
   // Initialize timeline handlers after DOM ready; also attempt immediately and add a short fallback

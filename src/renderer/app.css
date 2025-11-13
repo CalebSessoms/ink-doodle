@@ -769,6 +769,30 @@ body.theme-slate .body {
 .timeline-node .color-panel input[type="range"] { width: 100%; }
 .timeline-node .color-swatch { width: 28px; height: 20px; border-radius: 6px; border: 1px solid rgba(0,0,0,.06); display:inline-block; vertical-align:middle; margin-left:8px; }
 
+/* Connection handle */
+.conn-handle {
+  width: 12px; height: 12px; border-radius: 999px;
+  background: rgba(255,255,255,0.9); border: 2px solid rgba(0,0,0,0.12);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.12);
+  position: absolute; top: 50%; transform: translateY(-50%);
+  cursor: crosshair;
+}
+.conn-handle:hover { transform: translateY(-50%) scale(1.05); }
+
+.conn-handle.left { left: -6px; right: unset; }
+.conn-handle.right { right: -6px; left: unset; }
+.conn-handle.used { opacity: 0.5; transform: translateY(-50%) scale(0.95); }
+
+/* SVG link styles */
+.timeline-svg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.timeline-svg path.link { fill: none; stroke: rgba(30,144,255,0.9); stroke-width: 3px; stroke-linecap: round; }
+.timeline-svg path.temp { stroke: rgba(30,144,255,0.6); stroke-dasharray: 6 6; stroke-width: 2px; pointer-events: none; }
+
+/* Allow specific SVG elements to receive pointer events while keeping the svg overlay non-interfering by default */
+.timeline-svg.interactive * { pointer-events: auto; }
+.timeline-svg path.link.interactive { cursor: grab; pointer-events: auto; }
+.timeline-svg path.link.interactive:active { cursor: grabbing; }
+
 /* NEW: Danger button styling */
 .btn.danger {
   border-color: var(--danger);
