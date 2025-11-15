@@ -1,0 +1,19 @@
+{
+  "id": 2,
+  "code": "CHP-0001-000002",
+  "project_id": 1,
+  "creator_id": 2,
+  "number": null,
+  "title": "Rising from Ashes",
+  "content": "The Conclave's archives were Elara's sanctuary, but also her prison. She spent nights cross-referencing Valerius' notes with forbidden texts, finding patterns in the alchemical symbols that hinted at a hidden society within the institution. Her discovery of the Catalyst's true nature—a crystalline essence drawn from starlight—was met with skepticism until she found evidence of Valerius' final experiment: a half-completed transmutation circle in his workshop. The clues led her to an abandoned tower on the edge of Conclave grounds, where beneath loose floorboards lay a journal describing how the Catalyst could be weaponized to control elemental magic itself.",
+  "status": "Draft",
+  "summary": "Elara uncovers evidence of Valerius' secret experiments and discovers the true power of the Catalyst.",
+  "tags": [
+    "research",
+    "discovery",
+    "secret society"
+  ],
+  "created_at": "2025-11-05T22:00:00.000Z",
+  "updated_at": "2025-11-14T04:20:44.094Z",
+  "word_goal": 300
+}

@@ -1,0 +1,20 @@
+{
+  "id": 1,
+  "code": "CHP-0001-000001",
+  "project_id": 1,
+  "creator_id": 2,
+  "number": null,
+  "title": "The Beginning of the End",
+  "content": "Elara traced the faded symbols on the parchment, her fingers trembling with excitement. This wasn’t just any alchemical text—it spoke of the Catalyst of Creation: a substance said to transmute lead into gold and grant life itself. The manuscript hinted that such catalyst still existed, hidden away from the Conclave’s grasp. As she read further, her breath caught—her predecessor, Master Valerius, had been found dead under mysterious circumstances after discovering this very text. His notes scrawled in the margins: 'The truth is treason.' Elara’s orphaned past suddenly felt less like a burden and more like armor against the elite who’d silenced him. Outside, thunder rumbled as she realized her journey had just begun—not for glory, but survival.",
+  "status": "Draft",
+  "summary": "Elara discovers an ancient manuscript revealing lost Catalyst of Creation and learns her predecessor died investigating it, forcing her to confront a conspiracy within the Conclave.",
+  "tags": [
+    "discovery",
+    "danger",
+    "mentorship",
+    "conspiracy"
+  ],
+  "created_at": "2025-11-05T20:00:00.000Z",
+  "updated_at": "2025-11-14T04:20:44.067Z",
+  "word_goal": 0
+}

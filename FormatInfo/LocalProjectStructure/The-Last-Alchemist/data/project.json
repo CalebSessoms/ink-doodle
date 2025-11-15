@@ -1,0 +1,92 @@
+{
+  "project": {
+    "id": 1,
+    "code": "PRJ-0002-000001",
+    "title": "The Last Alchemist",
+    "creator_id": 2,
+    "created_at": "2025-11-05T18:00:00.000Z",
+    "updated_at": "2025-11-14T04:20:44.005Z"
+  },
+  "entries": [
+    {
+      "id": 1,
+      "code": "CHP-0001-000001",
+      "type": "chapter",
+      "title": "The Beginning of the End",
+      "order_index": 0,
+      "updated_at": "2025-11-14T04:20:44.067Z"
+    },
+    {
+      "id": 2,
+      "code": "CHP-0001-000002",
+      "type": "chapter",
+      "title": "Rising from Ashes",
+      "order_index": 1,
+      "updated_at": "2025-11-14T04:20:44.094Z"
+    },
+    {
+      "id": 3,
+      "code": "CHP-0001-000003",
+      "type": "chapter",
+      "title": "The Unseen Threat",
+      "order_index": 2,
+      "updated_at": "2025-11-14T04:20:44.122Z"
+    },
+    {
+      "id": 1,
+      "code": "NT-0001-000001",
+      "type": "note",
+      "title": "Character - Protagonist's Background (orphan inventor)",
+      "order_index": 0,
+      "updated_at": "2025-11-14T04:20:44.157Z"
+    },
+    {
+      "id": 2,
+      "code": "NT-0001-000002",
+      "type": "note",
+      "title": "Plot Point - The betrayal at the Conclave",
+      "order_index": 1,
+      "updated_at": "2025-11-14T04:20:44.188Z"
+    },
+    {
+      "id": 3,
+      "code": "NT-0001-000003",
+      "type": "note",
+      "title": "World Building - Magic System Limitations (catalyst scarcity)",
+      "order_index": 2,
+      "updated_at": "2025-11-14T04:20:44.212Z"
+    },
+    {
+      "id": 4,
+      "code": "NT-0001-000004",
+      "type": "note",
+      "title": "Research - Historical Alchemy references (Paracelsus)",
+      "order_index": 3,
+      "updated_at": "2025-11-14T04:20:44.241Z"
+    },
+    {
+      "id": 1,
+      "code": "RF-0001-000001",
+      "type": "reference",
+      "title": "Alchemy symbolism glossary.pdf",
+      "order_index": 0,
+      "updated_at": "2025-11-14T04:20:44.274Z"
+    },
+    {
+      "id": 2,
+      "code": "RF-0001-000002",
+      "type": "reference",
+      "title": "Concept art - Alchemist's workshop.jpg",
+      "order_index": 1,
+      "updated_at": "2025-11-14T04:20:44.303Z"
+    },
+    {
+      "id": 1,
+      "code": "LOR-0001-000001",
+      "type": "lore",
+      "title": "testOfLoad",
+      "order_index": 0,
+      "updated_at": "2025-11-14T04:20:44.337Z"
+    }
+  ]
+}

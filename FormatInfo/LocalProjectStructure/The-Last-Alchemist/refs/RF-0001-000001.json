@@ -1,0 +1,19 @@
+{
+  "id": 1,
+  "code": "RF-0001-000001",
+  "project_id": 1,
+  "creator_id": 2,
+  "number": null,
+  "title": "Alchemy symbolism glossary.pdf",
+  "tags": [
+    "alchemy",
+    "symbols",
+    "historical"
+  ],
+  "reference_type": "Glossary",
+  "summary": "Medieval alchemical symbols and their modern interpretations",
+  "source_link": "",
+  "content": "Comprehensive reference document detailing historical alchemical symbols, their meanings, and modern equivalents. Includes: 12th-century transmutation signs, celestial representations, and elemental correspondences. Critical for authentic spell-writing in chapters 2-4.",
+  "created_at": "2025-11-06T22:00:00.000Z",
+  "updated_at": "2025-11-14T04:20:44.274Z"
+}

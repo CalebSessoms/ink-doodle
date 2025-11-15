@@ -750,7 +750,7 @@ async function _wireDebugLogPathEarly() {
     let svg = canvas.querySelector('svg.timeline-svg');
     if (!svg) {
       svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-      svg.classList.add('timeline-svg');
+      svg.classList.add('timeline-svg', 'interactive');
       svg.setAttribute('width', '100%');
       svg.setAttribute('height', '100%');
       svg.setAttribute('preserveAspectRatio', 'none');
@@ -812,57 +812,7 @@ async function _wireDebugLogPathEarly() {
     dbg(`timeline: renderAllLinks count=${Object.keys(state.timelineLinks || {}).length}`);
     // clear existing persistent paths
     svg.querySelectorAll('path.link').forEach(p => p.remove());
-    // ensure link-drag handlers installed once
-    if (!window._tlLinkDragHandlersInstalled) {
-      window._tlLinkDragHandlersInstalled = true;
-      // pointermove/up handle for active link drags
-      window.addEventListener('pointermove', (ev) => {
-        try {
-          if (!_dragLink.active) return;
-          ev.preventDefault();
-          const cur = clientToCanvas(ev.clientX, ev.clientY);
-          const start = _dragLink.startCanvas || cur;
-          const dx = cur.x - start.x;
-          const dy = cur.y - start.y;
-          const lid = _dragLink.linkId;
-          if (!lid || !state.timelineLinks[lid]) return;
-          const base = _dragLink.startOffset || { x: 0, y: 0 };
-          const newOffset = { x: base.x + dx, y: base.y + dy };
-          state.timelineLinks[lid].cpOffset = newOffset;
-          // update the specific path element if present
-          try {
-            const svgEl = ensureTimelineSVG();
-            const path = svgEl && svgEl.querySelector ? svgEl.querySelector(`path.link[data-link-id="${lid}"]`) : null;
-            if (path) {
-              const ln = state.timelineLinks[lid];
-              const a = getHandlePositionOfNode(ln.fromHandle || ln.fromNode);
-              const b = getHandlePositionOfNode(ln.toHandle || ln.toNode);
-              if (a && b) {
-                const d = computeLinkD(a, b, ln.cpOffset || { x: 0, y: 0 });
-                path.setAttribute('d', d);
-              }
-            }
-          } catch (e) { /* best-effort */ }
-        } catch (e) { dbg('link drag move error: ' + (e && e.message)); }
-      });
-      window.addEventListener('pointerup', (ev) => {
-        try {
-          if (!_dragLink.active) return;
-          _dragLink.active = false;
-          const lid = _dragLink.linkId;
-          _dragLink.linkId = null;
-          _dragLink.startCanvas = null;
-          _dragLink.startOffset = null;
-          // Try to release pointer capture on the active element if possible
-          try {
-            const svgEl = ensureTimelineSVG();
-            const p = svgEl && svgEl.querySelector ? svgEl.querySelector(`path.link[data-link-id="${lid}"]`) : null;
-            if (p && ev.pointerId) try { p.releasePointerCapture(ev.pointerId); } catch (_) {}
-          } catch (e) {}
-          dbg(`timeline: link drag finished ${lid}`);
-        } catch (e) { dbg('link drag up error: ' + (e && e.message)); }
-      });
-    }
+
 
     for (const lid in state.timelineLinks) {
       const ln = state.timelineLinks[lid];
@@ -879,20 +829,7 @@ async function _wireDebugLogPathEarly() {
       path.dataset.linkId = lid;
       svg.appendChild(path);
 
-      // pointerdown to start dragging this link as a whole
-      path.addEventListener('pointerdown', (ev) => {
-        try {
-          if (ev.button !== 0) return; // left button only
-          ev.preventDefault();
-          // capture pointer to this path so move events are routed here
-          try { path.setPointerCapture(ev.pointerId); } catch (e) {}
-          _dragLink.active = true;
-          _dragLink.linkId = lid;
-          _dragLink.startCanvas = clientToCanvas(ev.clientX, ev.clientY);
-          _dragLink.startOffset = Object.assign({}, ln.cpOffset || { x: 0, y: 0 });
-          dbg(`timeline: link drag start ${lid} start=${Math.round(_dragLink.startCanvas.x)},${Math.round(_dragLink.startCanvas.y)}`);
-        } catch (e) { dbg('link pointerdown error: ' + (e && e.message)); }
-      });
+
     }
   }
 
@@ -911,6 +848,8 @@ async function _wireDebugLogPathEarly() {
   let _tempLink = { active: false, svgPath: null, fromNode: null, fromHandle: null };
   // Drag state for moving an existing link's control points as a unit
   let _dragLink = { active: false, linkId: null, startCanvas: null, startOffset: null };
+  // Connection editing state (for detach/reconnect)
+  let _editLink = { active: false, linkId: null, fromNode: null, fromHandle: null, toNode: null, toHandle: null };
   // Box-selection state and group-drag state
   let _boxSelect = { active: false, rectEl: null, startCanvas: null };
   let _groupDrag = { active: false, nodeIds: [], startClientX: 0, startClientY: 0, startPositions: {} };
@@ -946,7 +885,13 @@ async function _wireDebugLogPathEarly() {
       if (!nodeEl) return;
       const handles = (state.timelineNodes[nodeId] && state.timelineNodes[nodeId].handles) || [];
       const els = Array.from(nodeEl.querySelectorAll('.conn-handle'));
-      // If DOM handles don't match state, reconcile: ensure count and data-handle-id
+      // Remove orphaned DOM handles that don't exist in state
+      els.forEach(el => {
+        const hid = el.dataset.handleId;
+        if (!handles.find(h => h.id === hid)) {
+          el.remove();
+        }
+      });
       // Add missing DOM elements
       for (const h of handles) {
         if (!els.find(e => e.dataset.handleId === h.id)) {
@@ -994,6 +939,16 @@ async function _wireDebugLogPathEarly() {
   function startLinkDrag(fromNodeId, fromHandleId) {
     const svg = ensureTimelineSVG();
     if (!svg) return;
+    
+    // Only reset edit state if we're not currently in an edit operation
+    if (!_editLink.active) {
+      _editLink.linkId = null;
+      _editLink.fromNode = null;
+      _editLink.fromHandle = null;
+      _editLink.toNode = null;
+      _editLink.toHandle = null;
+    }
+    
     _tempLink.active = true;
     _tempLink.fromNode = fromNodeId;
     _tempLink.fromHandle = fromHandleId || null;
@@ -1028,6 +983,7 @@ async function _wireDebugLogPathEarly() {
     _tempLink.fromHandle = null;
     dbg(`timeline: finishLinkDrag fromNode=${fromNode} fromHandle=${fromHandle} targetNode=${targetNodeId} targetHandle=${targetHandleId} client=${clientX},${clientY}`);
     if (!fromNode) return;
+    
     if (!targetNodeId || targetNodeId === fromNode) {
       dbg('timeline: finishLinkDrag ignored (no valid target or self-link)');
       return; // ignore invalid
@@ -1072,20 +1028,259 @@ async function _wireDebugLogPathEarly() {
         const h = state.timelineNodes[fromNode].handles.find(h => h.id === srcHandle);
         const srcSide = h && h.side ? h.side : 'right';
         if (h) { h.used = true; dbg(`timeline: handle consumed ${srcHandle} on node ${fromNode}`); }
-        const newH = addHandleToNode(fromNode, false, srcSide);
-        dbg(`timeline: appended new empty handle ${newH} to node ${fromNode} side=${srcSide}`);
+        
+        // Only add new empty handle if there aren't enough unused handles on this side
+        const handles = state.timelineNodes[fromNode].handles || [];
+        const sameSideUnused = handles.filter(handle => handle.side === srcSide && !handle.used);
+        if (sameSideUnused.length === 0) {
+          const newH = addHandleToNode(fromNode, false, srcSide);
+          dbg(`timeline: appended new empty handle ${newH} to node ${fromNode} side=${srcSide}`);
+        } else {
+          dbg(`timeline: no new handle needed for node ${fromNode} side=${srcSide} (${sameSideUnused.length} unused handles available)`);
+        }
       }
       // target
       if (dstHandle && state.timelineNodes[targetNodeId]) {
         const h2 = state.timelineNodes[targetNodeId].handles.find(h => h.id === dstHandle);
         const dstSide = h2 && h2.side ? h2.side : 'left';
         if (h2) { h2.used = true; dbg(`timeline: handle consumed ${dstHandle} on node ${targetNodeId}`); }
-        const newH2 = addHandleToNode(targetNodeId, false, dstSide);
-        dbg(`timeline: appended new empty handle ${newH2} to node ${targetNodeId} side=${dstSide}`);
+        
+        // Only add new empty handle if there aren't enough unused handles on this side
+        const handles2 = state.timelineNodes[targetNodeId].handles || [];
+        const sameSideUnused2 = handles2.filter(handle => handle.side === dstSide && !handle.used);
+        if (sameSideUnused2.length === 0) {
+          const newH2 = addHandleToNode(targetNodeId, false, dstSide);
+          dbg(`timeline: appended new empty handle ${newH2} to node ${targetNodeId} side=${dstSide}`);
+        } else {
+          dbg(`timeline: no new handle needed for node ${targetNodeId} side=${dstSide} (${sameSideUnused2.length} unused handles available)`);
+        }
       }
     } catch (e) { dbg('finishLinkDrag handle update error: ' + (e && e.message)); }
 
+    // If this was a connection edit, log handle states of all involved nodes AFTER handles are updated
+    dbg(`timeline: FINISHLINKDRAG - checking edit context: ${window._editContext ? 'exists' : 'null'}`);
+    if (window._editContext && window._editContext.active) {
+      const sourceNode = window._editContext.sourceNode;
+      const originalTargetNode = window._editContext.originalTargetNode;
+      const newTargetNode = window._editContext.newTargetNode;
+      
+      dbg(`timeline: EDIT COMPLETE - logging handle states for all involved nodes AFTER handle updates`);
+      
+      // Log source node handle state
+      const sourceHandles = state.timelineNodes[sourceNode]?.handles || [];
+      dbg(`timeline: EDIT COMPLETE - SOURCE node ${sourceNode}: ${sourceHandles.length} handles: ${sourceHandles.map(h => `${h.id}(${h.used?'used':'unused'})`).join(', ')}`);
+      
+      // Log original target node handle state (if different from new target)
+      if (originalTargetNode && originalTargetNode !== newTargetNode) {
+        const originalTargetHandles = state.timelineNodes[originalTargetNode]?.handles || [];
+        dbg(`timeline: EDIT COMPLETE - ORIGINAL TARGET node ${originalTargetNode}: ${originalTargetHandles.length} handles: ${originalTargetHandles.map(h => `${h.id}(${h.used?'used':'unused'})`).join(', ')}`);
+      }
+      
+      // Log new target node handle state
+      const newTargetHandles = state.timelineNodes[newTargetNode]?.handles || [];
+      dbg(`timeline: EDIT COMPLETE - NEW TARGET node ${newTargetNode}: ${newTargetHandles.length} handles: ${newTargetHandles.map(h => `${h.id}(${h.used?'used':'unused'})`).join(', ')}`);
+      
+      // Clear the edit context
+      window._editContext = null;
+    }
+
     renderAllLinks();
+    touchSave(); // Save timeline changes
+  }
+
+  // ─────────────── Timeline Save/Load ───────────────
+  function saveTimelineData() {
+    if (!SAVE_FILE || !path || !fs) return;
+    
+    try {
+      const timelineFile = path.join(path.dirname(SAVE_FILE), 'timeline.json');
+      
+      // Clean up any stale links before saving
+      cleanupStaleLinks();
+      
+      // Build timeline data structure using entry codes
+      const timelineData = {
+        nodes: {},
+        links: {}
+      };
+      
+      // Convert nodes to use entry codes
+      for (const [nodeId, nodeData] of Object.entries(state.timelineNodes || {})) {
+        if (!nodeData.entryId) {
+          dbg(`timeline: saveTimelineData - skipping node ${nodeId} - no entryId`);
+          continue;
+        }
+        
+        // Find the entry using entryKey lookup
+        dbg(`timeline: saveTimelineData - looking up entry for nodeData.entryId=${nodeData.entryId}`);
+        const entry = findEntryByKey(nodeData.entryId);
+        if (!entry || !entry.code) {
+          dbg(`timeline: saveTimelineData - skipping node ${nodeId} - entry not found or no code. entryId=${nodeData.entryId} found=${!!entry} code=${entry?.code}`);
+          continue;
+        }
+        dbg(`timeline: saveTimelineData - found entry for node ${nodeId}: code=${entry.code} type=${entry.type} title=${entry.title}`);
+        
+        timelineData.nodes[nodeId] = {
+          entryCode: entry.code,
+          x: nodeData.x || 0,
+          y: nodeData.y || 0,
+          color: nodeData.color || null,
+          handles: nodeData.handles || []
+        };
+      }
+      
+      // Copy links directly, but only if both nodes exist
+      for (const [linkId, linkData] of Object.entries(state.timelineLinks || {})) {
+        // Verify both nodes exist in current timeline
+        if (!state.timelineNodes[linkData.fromNode] || !state.timelineNodes[linkData.toNode]) {
+          dbg(`timeline: saveTimelineData - skipping link ${linkId} - missing nodes (from: ${linkData.fromNode} exists: ${!!state.timelineNodes[linkData.fromNode]}, to: ${linkData.toNode} exists: ${!!state.timelineNodes[linkData.toNode]})`);
+          continue;
+        }
+        
+        timelineData.links[linkId] = {
+          fromNode: linkData.fromNode,
+          fromHandle: linkData.fromHandle,
+          toNode: linkData.toNode,
+          toHandle: linkData.toHandle,
+          cpOffset: linkData.cpOffset || { x: 0, y: 0 }
+        };
+        dbg(`timeline: saveTimelineData - saving link ${linkId}: ${linkData.fromNode} -> ${linkData.toNode}`);
+      }
+      
+      fs.writeFileSync(timelineFile, JSON.stringify(timelineData, null, 2), 'utf8');
+      dbg(`timeline: saved ${Object.keys(timelineData.nodes).length} nodes and ${Object.keys(timelineData.links).length} links to ${timelineFile}`);
+    } catch (e) {
+      dbg(`timeline: save failed: ${e?.message || e}`);
+    }
+  }
+  
+  function loadTimelineData() {
+    if (!SAVE_FILE || !path || !fs) return;
+    
+    try {
+      const timelineFile = path.join(path.dirname(SAVE_FILE), 'timeline.json');
+      if (!fs.existsSync(timelineFile)) {
+        dbg('timeline: no timeline.json found, skipping load');
+        return;
+      }
+      
+      const data = JSON.parse(fs.readFileSync(timelineFile, 'utf8'));
+      dbg(`timeline: loading ${Object.keys(data.nodes || {}).length} nodes and ${Object.keys(data.links || {}).length} links`);
+      
+      // Clear existing timeline state
+      state.timelineNodes = {};
+      state.timelineLinks = {};
+      
+      // Clear existing timeline DOM
+      const canvas = ensureTimelineCanvas();
+      if (canvas) {
+        canvas.querySelectorAll('.timeline-node').forEach(n => n.remove());
+      }
+      
+      // Track node ID mapping from saved to actual (needed when IDs change)
+      const nodeIdMapping = {};
+      
+      // Restore nodes
+      for (const [savedNodeId, nodeData] of Object.entries(data.nodes || {})) {
+        // Find entry by code
+        const entry = state.entries.find(e => e.code === nodeData.entryCode);
+        if (!entry) {
+          dbg(`timeline: skipping node ${savedNodeId} - entry with code ${nodeData.entryCode} not found`);
+          continue;
+        }
+        
+        dbg(`timeline: loadTimelineData - recreating node ${savedNodeId} for entry code=${entry.code} type=${entry.type}`);
+        
+        // Create the timeline node but override the auto-generated ID with the saved one
+        const actualNode = createTimelineNodeForEntryWithId(entry, nodeData.x, nodeData.y, savedNodeId, nodeData.color, nodeData.handles);
+        if (actualNode) {
+          nodeIdMapping[savedNodeId] = actualNode.nodeId;
+          dbg(`timeline: loadTimelineData - mapped saved node ${savedNodeId} to actual node ${actualNode.nodeId}`);
+        }
+      }
+      
+      // Restore links with corrected node IDs
+      for (const [linkId, linkData] of Object.entries(data.links || {})) {
+        const fromNodeId = nodeIdMapping[linkData.fromNode] || linkData.fromNode;
+        const toNodeId = nodeIdMapping[linkData.toNode] || linkData.toNode;
+        
+        // Only restore link if both nodes exist
+        if (state.timelineNodes[fromNodeId] && state.timelineNodes[toNodeId]) {
+          state.timelineLinks[linkId] = {
+            ...linkData,
+            fromNode: fromNodeId,
+            toNode: toNodeId
+          };
+          dbg(`timeline: loadTimelineData - restored link ${linkId}: ${fromNodeId}:${linkData.fromHandle} -> ${toNodeId}:${linkData.toHandle}`);
+        } else {
+          dbg(`timeline: loadTimelineData - skipping link ${linkId} - missing nodes (from: ${fromNodeId} exists: ${!!state.timelineNodes[fromNodeId]}, to: ${toNodeId} exists: ${!!state.timelineNodes[toNodeId]})`);
+        }
+      }
+      
+      renderAllLinks();
+      dbg('timeline: load completed successfully');
+    } catch (e) {
+      dbg(`timeline: load failed: ${e?.message || e}`);
+    }
+  }
+
+  // Helper to remove a connection and clean up handles
+  function removeConnection(linkId, skipAutoAddHandles = false) {
+    try {
+      const link = state.timelineLinks[linkId];
+      if (!link) return;
+      
+      dbg(`timeline: removing connection ${linkId}`);
+      
+      // Free up the handles by marking them unused and removing them
+      const srcNode = state.timelineNodes[link.fromNode];
+      const dstNode = state.timelineNodes[link.toNode];
+      
+      if (srcNode && link.fromHandle) {
+        const handles = srcNode.handles || [];
+        const handleIdx = handles.findIndex(h => h.id === link.fromHandle);
+        if (handleIdx >= 0) {
+          const handleObj = handles[handleIdx];
+          handles.splice(handleIdx, 1);
+          dbg(`timeline: removed handle ${link.fromHandle} from node ${link.fromNode}`);
+          
+          // Only auto-add replacement handle if not in editing mode
+          if (!skipAutoAddHandles) {
+            const handleSide = handleObj.side || 'right';
+            addHandleToNode(link.fromNode, false, handleSide);
+            dbg(`timeline: added replacement handle to node ${link.fromNode} side=${handleSide}`);
+          }
+          
+          updateHandlesForNode(link.fromNode);
+        }
+      }
+      
+      if (dstNode && link.toHandle) {
+        const handles = dstNode.handles || [];
+        const handleIdx = handles.findIndex(h => h.id === link.toHandle);
+        if (handleIdx >= 0) {
+          const handleObj = handles[handleIdx];
+          handles.splice(handleIdx, 1);
+          dbg(`timeline: removed handle ${link.toHandle} from node ${link.toNode}`);
+          
+          // Only auto-add replacement handle if not in editing mode
+          if (!skipAutoAddHandles) {
+            const handleSide = handleObj.side || 'left';
+            addHandleToNode(link.toNode, false, handleSide);
+            dbg(`timeline: added replacement handle to node ${link.toNode} side=${handleSide}`);
+          }
+          
+          updateHandlesForNode(link.toNode);
+        }
+      }
+      
+      // Remove the link itself
+      delete state.timelineLinks[linkId];
+      renderAllLinks();
+      touchSave(); // Save timeline changes
+    } catch (e) {
+      dbg('removeConnection error: ' + (e && e.message));
+    }
   }
 
   // Selection helpers (box-select + group move)
@@ -1365,6 +1560,7 @@ async function _wireDebugLogPathEarly() {
       // store in-memory
       state.timelineNodes[nodeId] = state.timelineNodes[nodeId] || {};
       state.timelineNodes[nodeId].color = hex;
+      touchSave(); // Save timeline color changes
     };
     applyHue(initialHue);
 
@@ -1481,6 +1677,7 @@ async function _wireDebugLogPathEarly() {
         _groupDrag.nodeIds = [];
         _groupDrag.startPositions = {};
         try { renderAllLinks(); } catch (e) { /* best-effort */ }
+        touchSave(); // Save timeline position changes
         return;
       }
       if (!dragging) return;
@@ -1499,6 +1696,7 @@ async function _wireDebugLogPathEarly() {
         state.timelineNodes[id].x = sx;
         state.timelineNodes[id].y = sy;
         try { renderAllLinks(); } catch (e) { /* best-effort */ }
+        touchSave(); // Save timeline position changes
       } catch (e) { /* best-effort */ }
     });
 
@@ -1509,27 +1707,269 @@ async function _wireDebugLogPathEarly() {
   node.appendChild(colorPanel);
 
     // store in-memory (initialize handles list)
-    state.timelineNodes[nodeId] = { entryId: entry.id, x, y, color, handles: [] };
+    const entryKeyVal = entryKey(entry);
+    dbg(`timeline: createTimelineNodeForEntry - storing entryKey=${entryKeyVal} for entry id=${entry?.id} code=${entry?.code} type=${entry?.type}`);
+    state.timelineNodes[nodeId] = { entryId: entryKeyVal, x, y, color, handles: [] };
     // create the initial empty handles on both sides so user can connect from either side
     try {
       addHandleToNode(nodeId, false, 'left');
       addHandleToNode(nodeId, false, 'right');
     } catch (e) { dbg('createTimelineNodeForEntry addHandle failed: ' + (e && e.message)); }
-    dbg(`timeline: node created id=${nodeId} entry=${entry?.id} pos=${x},${y} color=${color} -> debug.log`);
+    dbg(`timeline: node created id=${nodeId} entry=${entry?.id} entryKey=${entryKeyVal} pos=${x},${y} color=${color} -> debug.log`);
+    touchSave(); // Save timeline changes
     return nodeId;
+  }
+
+  // Version of createTimelineNodeForEntry that allows specifying nodeId and color (for loading)
+  function createTimelineNodeForEntryWithId(entry, x, y, forcedNodeId, forcedColor, savedHandles) {
+    const canvas = ensureTimelineCanvas();
+    if (!canvas) return null;
+    dbg(`timeline: createTimelineNodeForEntryWithId received entry=${entry?.id} x=${x} y=${y} forcedNodeId=${forcedNodeId} forcedColor=${forcedColor} handles=${savedHandles?.length || 0}`);
+
+    const nodeId = forcedNodeId || `tn-${uid()}`;
+    const color = forcedColor || pickColorForEntry(entry);
+
+    const node = document.createElement('div');
+    node.className = 'timeline-node';
+    node.style.left = `${x}px`;
+    node.style.top = `${y}px`;
+    node.style.background = color;
+    node.dataset.nodeId = nodeId;
+    node.dataset.entryId = entry.id;
+
+    const label = document.createElement('div');
+    label.className = 'node-label';
+    label.textContent = entry.title || '(Untitled)';
+
+    const kind = document.createElement('div');
+    kind.className = 'node-kind';
+    kind.textContent = entry.lore_kind || (entry.type || 'lore');
+
+    const leftWrap = document.createElement('div');
+    leftWrap.style.display = 'flex';
+    leftWrap.style.flexDirection = 'column';
+    leftWrap.appendChild(label);
+    leftWrap.appendChild(kind);
+
+    const remove = document.createElement('button');
+    remove.className = 'remove-btn';
+    remove.title = 'Remove from timeline';
+    remove.textContent = '×';
+    remove.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      removeTimelineNode(nodeId);
+    });
+
+    // Color picker control (simplified for loaded nodes)
+    const colorBtn = document.createElement('button');
+    colorBtn.className = 'color-btn';
+    colorBtn.title = 'Change color';
+    colorBtn.textContent = '◐';
+
+    const colorPanel = document.createElement('div');
+    colorPanel.className = 'color-panel';
+
+    const hueInput = document.createElement('input');
+    hueInput.type = 'range';
+    hueInput.min = 0; hueInput.max = 360; hueInput.step = 1;
+
+    const swatch = document.createElement('span');
+    swatch.className = 'color-swatch';
+
+    colorPanel.appendChild(hueInput);
+    colorPanel.appendChild(swatch);
+
+    // Color picker functionality (copied from createTimelineNodeForEntry)
+    function hslToRgb(h, s, l) {
+      s /= 100; l /= 100;
+      const k = n => (n + h / 30) % 12;
+      const a = s * Math.min(l, 1 - l);
+      const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+      return { r: Math.round(255 * f(0)), g: Math.round(255 * f(8)), b: Math.round(255 * f(4)) };
+    }
+    function rgbToHex(r,g,b){ return '#'+ [r,g,b].map(x => x.toString(16).padStart(2,'0')).join(''); }
+    function hexToRgbObj(hex) { const c = hex.replace('#',''); return { r: parseInt(c.slice(0,2),16), g: parseInt(c.slice(2,4),16), b: parseInt(c.slice(4,6),16) }; }
+    function rgbToHsl(r,g,b){ r/=255; g/=255; b/=255; const max=Math.max(r,g,b), min=Math.min(r,g,b); let h=0,s=0,l=(max+min)/2; if(max!==min){ const d=max-min; s = l>0.5? d/(2-max-min) : d/(max+min); switch(max){ case r: h=(g-b)/d + (g<b?6:0); break; case g: h=(b-r)/d + 2; break; case b: h=(r-g)/d + 4; break; } h = Math.round(h*60); } return { h: h, s: Math.round(s*100), l: Math.round(l*100) } }
+
+    let initialHue = 220;
+    try {
+      const rgb = hexToRgbObj(color);
+      const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+      initialHue = Number.isFinite(hsl.h) ? hsl.h : initialHue;
+    } catch (e) { /* use default */ }
+
+    hueInput.value = initialHue;
+    swatch.style.background = color;
+
+    colorBtn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const isOpen = colorPanel.style.display === 'block';
+      colorPanel.style.display = isOpen ? 'none' : 'block';
+      if (!isOpen) hueInput.focus();
+    });
+
+    hueInput.addEventListener('input', () => {
+      const hue = Number(hueInput.value) || 0;
+      const rgb = hslToRgb(hue, 80, 60);
+      const hex = rgbToHex(rgb.r, rgb.g, rgb.b);
+      swatch.style.background = hex;
+      node.style.background = hex;
+      if (state.timelineNodes[nodeId]) {
+        state.timelineNodes[nodeId].color = hex;
+      }
+      touchSave();
+    });
+
+    hueInput.addEventListener('blur', () => {
+      colorPanel.style.display = 'none';
+    });
+
+    // Node dragging functionality (copied from createTimelineNodeForEntry)
+    let dragging = false;
+    node.addEventListener('pointerdown', (ev) => {
+      if (ev.button !== 0) return;
+      const target = ev.target;
+      if (target.classList.contains('remove-btn') || target.classList.contains('color-btn') || 
+          target.closest('.color-panel') || target.classList.contains('conn-handle')) return;
+      ev.preventDefault();
+      try { node.setPointerCapture(ev.pointerId); } catch (e) {}
+      dragging = true;
+      const rect = canvas.getBoundingClientRect();
+      const startX = ev.clientX - rect.left - parseFloat(node.style.left || 0);
+      const startY = ev.clientY - rect.top - parseFloat(node.style.top || 0);
+      
+      const moveHandler = (ev) => {
+        if (!dragging) return;
+        const rect = canvas.getBoundingClientRect();
+        const newX = ev.clientX - rect.left - startX;
+        const newY = ev.clientY - rect.top - startY;
+        node.style.left = `${newX}px`;
+        node.style.top = `${newY}px`;
+        try { renderAllLinks(); } catch (e) { /* best-effort */ }
+      };
+      
+      node.addEventListener('pointermove', moveHandler);
+      node.addEventListener('pointerup', (ev) => {
+        if (!dragging) return;
+        dragging = false;
+        try { node.releasePointerCapture(ev.pointerId); } catch (e) {}
+        node.removeEventListener('pointermove', moveHandler);
+        const px = parseFloat(node.style.left || 0);
+        const py = parseFloat(node.style.top || 0);
+        const sx = snapToGrid(px, TIMELINE.grid);
+        const sy = snapToGrid(py, TIMELINE.grid);
+        node.style.left = `${sx}px`;
+        node.style.top = `${sy}px`;
+        state.timelineNodes[nodeId] = state.timelineNodes[nodeId] || {};
+        state.timelineNodes[nodeId].x = sx;
+        state.timelineNodes[nodeId].y = sy;
+        try { renderAllLinks(); } catch (e) { /* best-effort */ }
+        touchSave();
+      });
+    });
+
+    // Add UI elements to node
+    node.appendChild(leftWrap);
+    node.appendChild(remove);
+    canvas.appendChild(node);
+    
+    // Attach color button/panel to node (after append so absolute positions work)
+    node.appendChild(colorBtn);
+    node.appendChild(colorPanel);
+
+    // Store in-memory state
+    const entryKeyVal = entryKey(entry);
+    dbg(`timeline: createTimelineNodeForEntryWithId - storing entryKey=${entryKeyVal} for entry id=${entry?.id} code=${entry?.code} type=${entry?.type}`);
+    state.timelineNodes[nodeId] = { entryId: entryKeyVal, x, y, color, handles: [] };
+    
+    // Restore saved handles or create default ones
+    try {
+      if (savedHandles && savedHandles.length > 0) {
+        // Restore saved handles with exact IDs and states
+        for (const handleData of savedHandles) {
+          const hid = handleData.id;
+          const used = handleData.used;
+          const side = handleData.side || 'right';
+          
+          // Add to state
+          state.timelineNodes[nodeId].handles.push({ id: hid, used, side });
+          
+          // Create DOM element
+          const hEl = document.createElement('div');
+          hEl.className = 'conn-handle';
+          hEl.dataset.handleId = hid;
+          hEl.dataset.side = side;
+          hEl.classList.add(side);
+          if (used) hEl.classList.add('used');
+          hEl.title = 'Create link';
+          node.appendChild(hEl);
+          
+          dbg(`timeline: createTimelineNodeForEntryWithId - restored handle ${hid} used=${used} side=${side}`);
+        }
+        updateHandlesForNode(nodeId);
+      } else {
+        // Create default handles for new nodes
+        addHandleToNode(nodeId, false, 'left');
+        addHandleToNode(nodeId, false, 'right');
+        dbg(`timeline: createTimelineNodeForEntryWithId - created default handles`);
+      }
+    } catch (e) { dbg('createTimelineNodeForEntryWithId handle restoration failed: ' + (e && e.message)); }
+    
+    dbg(`timeline: loaded node created id=${nodeId} entry=${entry?.id} entryKey=${entryKeyVal} pos=${x},${y} color=${color}`);
+    touchSave(); // Save timeline changes
+    return { nodeId, entryKey: entryKeyVal };
   }
 
   function snapToGrid(v, grid) { return Math.round(v / grid) * grid; }
 
   function removeTimelineNode(nodeId) {
     try {
+      // First, find and remove all links involving this node using existing removeConnection
+      const linksToRemove = [];
+      for (const [linkId, linkData] of Object.entries(state.timelineLinks || {})) {
+        if (linkData.fromNode === nodeId || linkData.toNode === nodeId) {
+          linksToRemove.push(linkId);
+          dbg(`timeline: removeTimelineNode - found link to remove: ${linkId} (from=${linkData.fromNode} to=${linkData.toNode})`);
+        }
+      }
+      
+      // Use the existing removeConnection function for each link
+      for (const linkId of linksToRemove) {
+        removeConnection(linkId, true); // skipAutoAddHandles=true since node is being deleted
+      }
+      
       const canvas = ensureTimelineCanvas();
       const node = canvas.querySelector(`[data-node-id="${nodeId}"]`);
       if (node) node.remove();
-  try { renderAllLinks(); } catch (e) { /* best-effort */ }
+      
+      // Remove any remaining stale links (belt and suspenders)
+      cleanupStaleLinks();
+      
+      try { renderAllLinks(); } catch (e) { /* best-effort */ }
       delete state.timelineNodes[nodeId];
-      dbg(`timeline: node removed id=${nodeId}`);
+      dbg(`timeline: node removed id=${nodeId}, cleaned up ${linksToRemove.length} links`);
+      touchSave(); // Save timeline changes
     } catch (e) { dbg('removeTimelineNode error: ' + (e && e.message)); }
+  }
+
+  // Clean up links that reference non-existent nodes
+  function cleanupStaleLinks() {
+    const linksToRemove = [];
+    for (const [linkId, linkData] of Object.entries(state.timelineLinks || {})) {
+      if (!state.timelineNodes[linkData.fromNode] || !state.timelineNodes[linkData.toNode]) {
+        linksToRemove.push(linkId);
+        dbg(`timeline: cleanupStaleLinks - marking link ${linkId} for removal (missing nodes: from=${linkData.fromNode} to=${linkData.toNode})`);
+      }
+    }
+    
+    for (const linkId of linksToRemove) {
+      delete state.timelineLinks[linkId];
+      dbg(`timeline: cleanupStaleLinks - removed stale link ${linkId}`);
+    }
+    
+    if (linksToRemove.length > 0) {
+      dbg(`timeline: cleanupStaleLinks - removed ${linksToRemove.length} stale links`);
+    }
   }
 
   // Handle drop from sidebar entries (they are HTML5 drag sources)
@@ -1568,56 +2008,280 @@ async function _wireDebugLogPathEarly() {
         const localX = snapToGrid(local.x, TIMELINE.grid);
         const localY = snapToGrid(local.y, TIMELINE.grid);
 
-        dbg(`timeline: creating node for entry=${entry.id} at local=${localX},${localY}`);
+        dbg(`timeline: creating node for entry id=${entry.id} code=${entry.code} type=${entry.type} title="${entry.title}" at local=${localX},${localY}`);
         createTimelineNodeForEntry(entry, localX, localY);
       } catch (e) { dbg('timeline drop error: ' + (e && e.message)); }
     });
 
-    // Connection-handle link creation: pointer events for starting a link
-    if (!canvas.dataset.tlLinkHandlersInstalled) {
-      canvas.dataset.tlLinkHandlersInstalled = '1';
+    // Unified connection interaction system: creation, editing, deletion
+    if (!canvas.dataset.tlConnectionHandlersInstalled) {
+      canvas.dataset.tlConnectionHandlersInstalled = '1';
 
       canvas.addEventListener('pointerdown', (ev) => {
         try {
-          // Only start link drag when clicking directly on a connection handle
           if (ev.button !== 0) return; // left button only
-          const target = ev.target && ev.target.closest ? ev.target.closest('.conn-handle') : null;
-          if (!target) return;
-          // Don't start a new link from a handle that's already used
-          if (target.classList && target.classList.contains('used')) {
-            dbg(`timeline: pointerdown on used handle ignored (handle=${target.dataset.handleId})`);
+          
+          // Handle SVG path clicks (existing connections)
+          if (ev.target && ev.target.tagName === 'path' && ev.target.classList.contains('link')) {
+            const linkId = ev.target.dataset.linkId;
+            if (!linkId || !state.timelineLinks[linkId]) return;
+            
+            ev.preventDefault();
+            const link = state.timelineLinks[linkId];
+            
+            // Alt+click to delete connection
+            if (ev.altKey && !ev.shiftKey) {
+              removeConnection(linkId);
+              dbg(`timeline: connection deleted via Alt+click ${linkId}`);
+              return;
+            }
+            
+            // Shift+click to edit connection (detach and reconnect)
+            if (ev.shiftKey) {
+              try { ev.target.setPointerCapture(ev.pointerId); } catch (e) {}
+              _editLink.active = true;
+              _editLink.linkId = linkId;
+              _editLink.fromNode = link.fromNode;
+              _editLink.fromHandle = link.fromHandle;
+              _editLink.toNode = link.toNode;
+              _editLink.toHandle = link.toHandle;
+              
+              // Remove the existing connection
+              removeConnection(linkId);
+              
+              // Start a new temporary link from the source handle
+              startLinkDrag(_editLink.fromNode, _editLink.fromHandle);
+              dbg(`timeline: connection edit started ${linkId} - detached and creating temp link`);
+              return;
+            }
+            
+            // Normal click - start dragging control points
+            try { ev.target.setPointerCapture(ev.pointerId); } catch (e) {}
+            _dragLink.active = true;
+            _dragLink.linkId = linkId;
+            _dragLink.startCanvas = clientToCanvas(ev.clientX, ev.clientY);
+            _dragLink.startOffset = Object.assign({}, link.cpOffset || { x: 0, y: 0 });
+            dbg(`timeline: link drag start ${linkId}`);
             return;
           }
-          const nodeEl = target.closest('.timeline-node');
-          if (!nodeEl) return;
-          const nodeId = nodeEl.dataset.nodeId;
-          const handleId = target.dataset.handleId;
-          if (!nodeId) return;
-          ev.preventDefault();
-          startLinkDrag(nodeId, handleId);
-        } catch (e) { dbg('timeline link pointerdown error: ' + (e && e.message)); }
+          
+          // Handle connection handle clicks
+          if (ev.target && ev.target.classList && ev.target.classList.contains('conn-handle')) {
+            const target = ev.target;
+            const nodeEl = target.closest('.timeline-node');
+            if (!nodeEl) return;
+            const nodeId = nodeEl.dataset.nodeId;
+            const handleId = target.dataset.handleId;
+            if (!nodeId) return;
+            
+            ev.preventDefault();
+            
+            // Check if this handle is used (has an existing connection)
+            if (target.classList.contains('used')) {
+              // USED HANDLE: Find and edit/delete the existing connection
+              dbg(`timeline: editing connection on used handle ${handleId}`);
+              
+              // Find the connection that uses this handle
+              let connectionId = null;
+              let connection = null;
+              for (const [lid, link] of Object.entries(state.timelineLinks)) {
+                if (link.fromHandle === handleId || link.toHandle === handleId) {
+                  connectionId = lid;
+                  connection = link;
+                  break;
+                }
+              }
+              
+              if (!connection) {
+                dbg(`timeline: no connection found for used handle ${handleId}`);
+                return;
+              }
+              
+              // Alt+click to delete the connection
+              if (ev.altKey) {
+                removeConnection(connectionId);
+                dbg(`timeline: connection deleted via Alt+click on handle ${connectionId}`);
+                return;
+              }
+              
+              // Shift+click or normal click to edit (detach and reconnect)
+              _editLink.active = true;
+              _editLink.linkId = connectionId;
+              _editLink.fromNode = connection.fromNode;
+              _editLink.fromHandle = connection.fromHandle;
+              _editLink.toNode = connection.toNode;
+              _editLink.toHandle = connection.toHandle;
+              
+              dbg(`timeline: EDIT SETUP - connection ${connectionId} from ${connection.fromNode}:${connection.fromHandle} to ${connection.toNode}:${connection.toHandle}`);
+              
+              // Determine which end we're editing from
+              const isFromHandle = connection.fromHandle === handleId;
+              const sourceNode = isFromHandle ? connection.fromNode : connection.toNode;
+              const sourceHandleId = isFromHandle ? connection.fromHandle : connection.toHandle;
+              
+              dbg(`timeline: EDIT SETUP - editing from ${isFromHandle ? 'FROM' : 'TO'} end, sourceNode=${sourceNode}, sourceHandle=${sourceHandleId}`);
+              
+              // Get the source handle info before removing
+              if (!state.timelineNodes[sourceNode]) return;
+              const nodeHandles = state.timelineNodes[sourceNode].handles || [];
+              const sourceHandleObj = nodeHandles.find(h => h.id === sourceHandleId);
+              if (!sourceHandleObj) return;
+              const sourceSide = sourceHandleObj.side || 'right';
+              
+              // Remove the existing connection (skip auto-adding handles since we'll add one manually)
+              removeConnection(connectionId, true);
+              
+              // Add a single new unused handle for the temp link
+              const newTempHandleId = addHandleToNode(sourceNode, false, sourceSide);
+              dbg(`timeline: EDIT SETUP - created temp handle ${newTempHandleId} on node ${sourceNode} side ${sourceSide}`);
+              
+              // Start a new temporary link from the new unused handle
+              startLinkDrag(sourceNode, newTempHandleId);
+              dbg(`timeline: EDIT SETUP - connection edit started ${connectionId} - detached and creating temp link from new handle ${newTempHandleId}`);
+              
+            } else {
+              // UNUSED HANDLE: Create new connection
+              startLinkDrag(nodeId, handleId);
+              dbg(`timeline: started new connection from unused handle ${handleId}`);
+            }
+          }
+        } catch (e) { dbg('unified connection pointerdown error: ' + (e && e.message)); }
       });
-
-      // Global pointermove/up to update/finish temporary link regardless of element capture
+      
+      // Global pointermove for both connection creation and editing
       window.addEventListener('pointermove', (ev) => {
         try {
-          if (!_tempLink.active) return;
-          ev.preventDefault();
-          updateTempLink(ev.clientX, ev.clientY);
+          // Handle temporary link creation/editing
+          if (_tempLink.active) {
+            ev.preventDefault();
+            updateTempLink(ev.clientX, ev.clientY);
+            return;
+          }
+          
+          // Handle connection control point dragging
+          if (_dragLink.active) {
+            const canvasPos = clientToCanvas(ev.clientX, ev.clientY);
+            const dx = canvasPos.x - _dragLink.startCanvas.x;
+            const dy = canvasPos.y - _dragLink.startCanvas.y;
+            const link = state.timelineLinks[_dragLink.linkId];
+            if (link) {
+              link.cpOffset = {
+                x: _dragLink.startOffset.x + dx,
+                y: _dragLink.startOffset.y + dy
+              };
+              renderAllLinks();
+            }
+          }
         } catch (e) { /* best-effort */ }
       });
 
+      // Global pointerup for all connection interactions
       window.addEventListener('pointerup', (ev) => {
         try {
-          if (!_tempLink.active) return;
-          // Determine if we're over a handle on release
-          const el = document.elementFromPoint(ev.clientX, ev.clientY);
-          const handle = el && el.closest ? el.closest('.conn-handle') : null;
-          const targetNode = handle ? handle.closest('.timeline-node') : null;
-          const targetId = targetNode ? targetNode.dataset.nodeId : null;
-          const targetHandleId = handle ? handle.dataset.handleId : null;
-          finishLinkDrag(ev.clientX, ev.clientY, targetId, targetHandleId);
-        } catch (e) { dbg('timeline link pointerup error: ' + (e && e.message)); }
+          // Handle temporary link completion
+          if (_tempLink.active) {
+            dbg(`timeline: POINTER UP - temp link active, fromNode=${_tempLink.fromNode}, fromHandle=${_tempLink.fromHandle}`);
+            dbg(`timeline: POINTER UP - editLink active=${_editLink.active}, linkId=${_editLink.linkId}`);
+            
+            const el = document.elementFromPoint(ev.clientX, ev.clientY);
+            const handle = el && el.closest ? el.closest('.conn-handle') : null;
+            const targetNode = handle ? handle.closest('.timeline-node') : null;
+            const targetId = targetNode ? targetNode.dataset.nodeId : null;
+            const targetHandleId = handle ? handle.dataset.handleId : null;
+            
+            dbg(`timeline: POINTER UP - target detection: element=${el?.tagName}, handle=${!!handle}, targetNode=${targetId}, targetHandle=${targetHandleId}`);
+            
+            // Handle connection editing vs deletion
+            if (_editLink.active) {
+              dbg(`timeline: DECISION - editLink active, checking target validity`);
+              dbg(`timeline: DECISION - targetId=${targetId}, targetHandleId=${targetHandleId}, fromNode=${_tempLink.fromNode}`);
+              
+              if (!targetId || !targetHandleId || targetId === _tempLink.fromNode) {
+                // No valid target or same node = DELETE the connection
+                dbg(`timeline: DECISION -> DELETE - no valid target or self-connection`);
+                
+                // Clean up the temporary handle we created
+                const sourceNode = _tempLink.fromNode;
+                const sourceHandleId = _tempLink.fromHandle;
+                
+                dbg(`timeline: DELETE CLEANUP - sourceNode=${sourceNode}, sourceHandleId=${sourceHandleId}`);
+                
+                if (sourceNode && sourceHandleId && state.timelineNodes[sourceNode]) {
+                  const handles = state.timelineNodes[sourceNode].handles || [];
+                  dbg(`timeline: DELETE CLEANUP - node has ${handles.length} handles: ${handles.map(h => `${h.id}(${h.used?'used':'unused'})`).join(', ')}`);
+                  
+                  const handleIdx = handles.findIndex(h => h.id === sourceHandleId);
+                  dbg(`timeline: DELETE CLEANUP - looking for handle ${sourceHandleId}, found at index ${handleIdx}`);
+                  
+                  if (handleIdx >= 0) {
+                    handles.splice(handleIdx, 1);
+                    dbg(`timeline: DELETE CLEANUP - removed temp handle ${sourceHandleId}, remaining: ${handles.map(h => `${h.id}(${h.used?'used':'unused'})`).join(', ')}`);
+                    updateHandlesForNode(sourceNode);
+                  } else {
+                    dbg(`timeline: DELETE CLEANUP - ERROR: temp handle ${sourceHandleId} not found in handles!`);
+                  }
+                } else {
+                  dbg(`timeline: DELETE CLEANUP - ERROR: invalid state sourceNode=${sourceNode} sourceHandleId=${sourceHandleId} nodeExists=${!!state.timelineNodes[sourceNode]}`);
+                }
+                
+                // Reset edit state
+                _editLink.active = false;
+                _editLink.linkId = null;
+                _editLink.fromNode = null;
+                _editLink.fromHandle = null;
+                _editLink.toNode = null;
+                _editLink.toHandle = null;
+                
+                // Clear temp link state to prevent finishLinkDrag from running
+                _tempLink.active = false;
+                if (_tempLink.svgPath) {
+                  try { _tempLink.svgPath.remove(); } catch (e) {}
+                  _tempLink.svgPath = null;
+                }
+                _tempLink.fromNode = null;
+                _tempLink.fromHandle = null;
+                
+                dbg(`timeline: connection deleted successfully`);
+              } else {
+                // Valid target = EDIT the connection (reconnect)
+                dbg(`timeline: DECISION -> EDIT - reconnecting to new target ${targetId}:${targetHandleId}`);
+                // Store edit context for debugging before clearing active flag
+                window._editContext = {
+                  active: true,
+                  sourceNode: _tempLink.fromNode,
+                  originalTargetNode: _editLink.toNode,
+                  newTargetNode: targetId
+                };
+                dbg(`timeline: EDIT CONTEXT STORED - source=${_tempLink.fromNode}, originalTarget=${_editLink.toNode}, newTarget=${targetId}`);
+                _editLink.active = false; // Let finishLinkDrag handle the reconnection
+              }
+            }
+            
+            finishLinkDrag(ev.clientX, ev.clientY, targetId, targetHandleId);
+            return;
+          }
+          
+          // Handle connection editing completion
+          if (_editLink.active) {
+            _editLink.active = false;
+            _editLink.linkId = null;
+            _editLink.fromNode = null;
+            _editLink.fromHandle = null;
+            _editLink.toNode = null;
+            _editLink.toHandle = null;
+            dbg('timeline: connection edit ended');
+            return;
+          }
+          
+          // Handle connection drag completion
+          if (_dragLink.active) {
+            _dragLink.active = false;
+            _dragLink.linkId = null;
+            _dragLink.startCanvas = null;
+            _dragLink.startOffset = null;
+            dbg('timeline: connection drag ended');
+          }
+        } catch (e) { dbg('unified connection pointerup error: ' + (e && e.message)); }
       });
     }
   }
@@ -3750,6 +4414,10 @@ function saveUIPrefsDebounced() {
         // Fallback to writing data directly
         fs.writeFileSync(SAVE_FILE, JSON.stringify(data, null, 2), "utf8");
       }
+      
+      // Save timeline data
+      saveTimelineData();
+      
       const t = new Date();
       el.lastSaved && (el.lastSaved.textContent = `Last saved • ${t.toLocaleTimeString()}`);
       el.saveState && (el.saveState.textContent = "Saved");
@@ -4057,6 +4725,10 @@ function saveUIPrefsDebounced() {
   if (sel) { state.selectedId = entryKey(sel); populateEditor(sel); }
 
       renderList();
+      
+      // Load timeline data
+      loadTimelineData();
+      
       state.dirty = false;
       state.lastSavedAt = Date.now();
       dbg(`Loaded workspace file: ${SAVE_FILE}`);

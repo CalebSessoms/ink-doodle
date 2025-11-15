@@ -1,0 +1,18 @@
+{
+  "id": 1,
+  "code": "NT-0001-000001",
+  "project_id": 1,
+  "creator_id": 2,
+  "number": null,
+  "title": "Character - Protagonist's Background (orphan inventor)",
+  "content": "Elara discovered alchemy after being abandoned at a monastery's scriptorium. Self-taught, she reverse-engineered ancient texts by candlelight. Her outsider perspective allows her to see patterns Conclave scholars miss. Key detail: She keeps her mentor's brass compass as a talisman – it points not north, but toward hidden knowledge.",
+  "tags": [
+    "protagonist",
+    "orphan",
+    "talent"
+  ],
+  "category": "Character",
+  "pinned": true,
+  "created_at": "2025-11-06T02:00:00.000Z",
+  "updated_at": "2025-11-14T04:20:44.157Z"
+}

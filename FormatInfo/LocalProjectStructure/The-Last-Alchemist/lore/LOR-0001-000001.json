@@ -1,0 +1,24 @@
+{
+  "id": 1,
+  "code": "LOR-0001-000001",
+  "project_id": 1,
+  "creator_id": 2,
+  "number": null,
+  "title": "testOfLoad",
+  "content": "test",
+  "summary": "test",
+  "tags": [
+    "test"
+  ],
+  "lore_kind": "test",
+  "entry1_name": "test",
+  "entry1_content": "test",
+  "entry2_name": "test",
+  "entry2_content": "test",
+  "entry3_name": "test",
+  "entry3_content": "test",
+  "entry4_name": "test",
+  "entry4_content": "test",
+  "created_at": "2025-11-07T03:16:10.198Z",
+  "updated_at": "2025-11-14T04:20:44.337Z"
+}

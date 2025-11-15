@@ -1,0 +1,18 @@
+{
+  "id": 4,
+  "code": "NT-0001-000004",
+  "project_id": 1,
+  "creator_id": 2,
+  "number": null,
+  "title": "Research - Historical Alchemy references (Paracelsus)",
+  "content": "Paracelsus' 'Aurum Potabile' manuscript describes catalyst as 'the philosopher's stone that breathes life.' Key quote: 'It must be dissolved in the tears of those who know loss.' Modern translation: Catalyst requires emotional resonance to stabilize. Connects to Elara's orphan trauma – her power stems from unresolved grief.",
+  "tags": [
+    "alchemy",
+    "historical",
+    "symbolism"
+  ],
+  "category": "Research",
+  "pinned": false,
+  "created_at": "2025-11-06T03:45:00.000Z",
+  "updated_at": "2025-11-14T04:20:44.241Z"
+}

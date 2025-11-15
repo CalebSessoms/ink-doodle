@@ -1,0 +1,18 @@
+{
+  "id": 2,
+  "code": "NT-0001-000002",
+  "project_id": 1,
+  "creator_id": 2,
+  "number": null,
+  "title": "Plot Point - The betrayal at the Conclave",
+  "content": "Valerius' death was no accident. He discovered that senior alchemists were mass-producing catalyst to weaponize elemental magic. His journal reveals a coded warning: 'They trade life for power.' Must show Elara finding this evidence in Chapter 3. Foreshadowing hint: Conclave's 'accident reports' always occur during lunar eclipses.",
+  "tags": [
+    "betrayal",
+    "conspiracy",
+    "evidence"
+  ],
+  "category": "Plot",
+  "pinned": false,
+  "created_at": "2025-11-06T02:30:00.000Z",
+  "updated_at": "2025-11-14T04:20:44.188Z"
+}

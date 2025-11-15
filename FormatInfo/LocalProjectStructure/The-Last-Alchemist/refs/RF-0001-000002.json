@@ -1,0 +1,19 @@
+{
+  "id": 2,
+  "code": "RF-0001-000002",
+  "project_id": 1,
+  "creator_id": 2,
+  "number": null,
+  "title": "Concept art - Alchemist's workshop.jpg",
+  "tags": [
+    "setting",
+    "visual",
+    "atmosphere"
+  ],
+  "reference_type": "Concept Art",
+  "summary": "Visual reference for alchemist's workshop with hidden details",
+  "source_link": "",
+  "content": "Detailed digital painting of an alchemical workspace featuring: \n• Central workbench with alembics and retorts  \n• Wall-mounted celestial charts (zodiac symbols)  \n• Shelves holding rare ingredient jars (dragon scales, phoenix feathers)  \n• Hidden compartment beneath floorboards containing Valerius' journal",
+  "created_at": "2025-11-06T22:30:00.000Z",
+  "updated_at": "2025-11-14T04:20:44.303Z"
+}

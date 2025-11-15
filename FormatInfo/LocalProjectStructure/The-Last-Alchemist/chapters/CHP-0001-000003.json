@@ -1,0 +1,19 @@
+{
+  "id": 3,
+  "code": "CHP-0001-000003",
+  "project_id": 1,
+  "creator_id": 2,
+  "number": null,
+  "title": "The Unseen Threat",
+  "content": "As Elara approached the tower during a storm, she sensed eyes watching from above. The air crackled with latent magic—someone had tampered with the protective wards. Inside, Valerius' journal confirmed her worst fears: members of the Conclave's inner circle were using the Catalyst to create artificial elemental guardians for military conquest. But more disturbing was the revelation that Valerius hadn't died by accident—he'd been silenced when he discovered their true goal: mass-producing the Catalyst to rewrite the world's magical balance. A sudden flash illuminated a figure in the shadows—the same person who had been following her since she first took Valerius' position.",
+  "status": "Draft",
+  "summary": "Elara discovers the Conclave's dark secret about weaponized Catalyst and confronts an unknown stalker.",
+  "tags": [
+    "conspiracy",
+    "action",
+    "betrayal"
+  ],
+  "created_at": "2025-11-06T00:00:00.000Z",
+  "updated_at": "2025-11-14T04:20:44.122Z",
+  "word_goal": 350
+}

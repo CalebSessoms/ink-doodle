@@ -1,0 +1,18 @@
+{
+  "id": 3,
+  "code": "NT-0001-000003",
+  "project_id": 1,
+  "creator_id": 2,
+  "number": null,
+  "title": "World Building - Magic System Limitations (catalyst scarcity)",
+  "content": "Catalyst requires: 1) Starlight captured in obsidian lenses, 2) Blood of a 'true alchemist' (genetic marker), 3) Volcanic ash from dormant volcanoes. Only 0.001% of catalyst works transmutation – rest turns volatile. Limitations create tension: Elara must choose between preserving catalyst for research or using it for immediate power.",
+  "tags": [
+    "magic system",
+    "resources",
+    "tradeoffs"
+  ],
+  "category": "World Building",
+  "pinned": true,
+  "created_at": "2025-11-06T03:00:00.000Z",
+  "updated_at": "2025-11-14T04:20:44.212Z"
+}
