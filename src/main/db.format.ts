@@ -56,6 +56,20 @@ const LORE = {
   UPDATED_AT: 'updated_at'
 } as const;
 
+const TIMELINES = {
+  ID: 'id',
+  CODE: 'code',
+  PROJECT_ID: 'project_id',
+  CREATOR_ID: 'creator_id',
+  TITLE: 'title',
+  DESCRIPTION: 'description',
+  NODES: 'nodes',
+  LINKS: 'links',
+  SETTINGS: 'settings',
+  CREATED_AT: 'created_at',
+  UPDATED_AT: 'updated_at'
+} as const;
+
 /**
  * Load a local project directory and prepare a structured object suitable
  * for the uploader. This will call `collectProjectData` and return a small
@@ -75,6 +89,8 @@ let lastLoadedChapterCols: Record<string, any[]> | null = null;
 let lastLoadedNoteCols: Record<string, any[]> | null = null;
 let lastLoadedRefCols: Record<string, any[]> | null = null;
 let lastLoadedLoreCols: Record<string, any[]> | null = null;
+let lastLoadedTimelineCols: Record<string, any[]> | null = null;
+let lastLoadedTimelines: any[] | null = null;
 
 export async function loadProjectForUpload(projectPath: string): Promise<any> {
   const data = await collectProjectData(projectPath);
@@ -89,7 +105,7 @@ export async function loadProjectForUpload(projectPath: string): Promise<any> {
  * @param {string} projectPath - absolute path to the project directory
  * @returns {Promise<{project: any, chapters: any[], notes: any[], refs: any[]}>}
  */
-export async function collectProjectData(projectPath: string): Promise<{project: any, creator: any, chapters: any[], notes: any[], refs: any[], lore: any[], chapter_ids: number[], note_ids: number[], ref_ids: number[], lore_ids: number[], chapter_cols: Record<string, any[]>, note_cols: Record<string, any[]>, ref_cols: Record<string, any[]>, lore_cols: Record<string, any[]>}> {
+export async function collectProjectData(projectPath: string): Promise<{project: any, creator: any, chapters: any[], notes: any[], refs: any[], lore: any[], timelines: any[], chapter_ids: number[], note_ids: number[], ref_ids: number[], lore_ids: number[], timeline_ids: string[], chapter_cols: Record<string, any[]>, note_cols: Record<string, any[]>, ref_cols: Record<string, any[]>, lore_cols: Record<string, any[]>, timeline_cols: Record<string, any[]>}> {
   // Read project.json
   const projectFile = path.join(projectPath, 'data', 'project.json');
   let raw: any;
@@ -191,6 +207,48 @@ export async function collectProjectData(projectPath: string): Promise<{project:
   const notes = await readEntries('notes');
   const refs = await readEntries('refs');
   const lores = await readEntries('lore');
+  
+  // Read timeline.json file from project data directory
+  const timelines: any[] = [];
+  const timelineFile = path.join(projectPath, 'data', 'timeline.json');
+  appendDebugLog(`db.format:collectProjectData - checking for timeline file: ${timelineFile}`);
+  
+  try {
+    const timelineTxt = await fs.readFile(timelineFile, 'utf8');
+    appendDebugLog(`db.format:collectProjectData - timeline file found, size: ${timelineTxt.length} chars`);
+    
+    const timelineData = JSON.parse(timelineTxt);
+    appendDebugLog(`db.format:collectProjectData - timeline data parsed, keys: ${Object.keys(timelineData || {}).join(', ')}`);
+    appendDebugLog(`db.format:collectProjectData - timeline.id: ${timelineData?.id}, timeline.code: ${timelineData?.code}`);
+    
+    if (timelineData) {
+      // Use the timeline's code as the database ID (short format like TMLPRJ-0002-000001)
+      // This is the field that fits the database's 20-character limit
+      const timelineId = timelineData.code || `TML${String(proj.code || '001').padStart(3, '0')}`;
+      appendDebugLog(`db.format:collectProjectData - using timelineId: ${timelineId} (from code: ${timelineData.code})`);
+      const timeline = {
+        id: timelineData.id,  // Keep the original numeric id for later field mapping <-- SETTING FROM LOCAL DIRECTORY timelineData.id
+        code: timelineData.code,  // Keep the original string code for later field mapping <-- SETTING FROM LOCAL DIRECTORY timelineData.code
+        project_id: proj.code,
+        creator_id: proj.creator_id,
+        title: timelineData.title || `${proj.title || 'Project'} Timeline`,
+        description: timelineData.description || 'Project timeline visualization',
+        nodes: JSON.stringify(timelineData.nodes || []),
+        links: JSON.stringify(timelineData.links || []),
+        settings: JSON.stringify(timelineData.settings || {}),
+        created_at: timelineData.created_at || new Date().toISOString(),
+        updated_at: timelineData.updated_at || new Date().toISOString()
+      };
+      appendDebugLog(`NULL CHECK id:${timelineData.id}, code:${timelineData.code}`);
+      timelines.push(timeline);
+      appendDebugLog(`db.format:collectProjectData - created timeline entry: ${timelineId}, nodes: ${Object.keys(timelineData.nodes || {}).length}, links: ${Object.keys(timelineData.links || {}).length}`);
+    } else {
+      appendDebugLog(`db.format:collectProjectData - timeline data is null or empty`);
+    }
+  } catch (err) {
+    appendDebugLog(`db.format:collectProjectData - timeline file read failed: ${(err as Error).message}`);
+    // Timeline file may not exist - that's okay
+  }
 
   // Normalize entries (unwrap wrappers), set updated_at to current time.
   const nowIsoEntries = new Date().toISOString();
@@ -230,6 +288,11 @@ export async function collectProjectData(projectPath: string): Promise<{project:
     status: [], summary: [], tags: [], created_at: [], updated_at: [], lore_kind: [],
     entry1_name: [], entry1_content: [], entry2_name: [], entry2_content: [],
     entry3_name: [], entry3_content: [], entry4_name: [], entry4_content: []
+  };
+
+  const timelineCols: Record<string, any[]> = {
+    id: [], code: [], project_id: [], creator_id: [], title: [], description: [],
+    nodes: [], links: [], settings: [], created_at: [], updated_at: []
   };
 
   for (const c of normChapters) {
@@ -324,6 +387,29 @@ export async function collectProjectData(projectPath: string): Promise<{project:
     }
   }
 
+  // Process timeline data
+  for (const t of timelines) {
+    // DB expects `id` to be the timeline's code (text) and `code` to be the
+    // local numeric id — reverse the local mapping like chapters do
+    appendDebugLog(`db.format: processing timeline - raw t.id=${t.id}, raw t.code=${t.code}, raw t.title=${t.title}`);
+    const mappedId = t.code ?? null;
+    const mappedCode = t.id ?? null;
+    appendDebugLog(`db.format: timeline mapping values - mappedId=${mappedId}, mappedCode=${mappedCode}`);
+    timelineCols.id.push(mappedId);  // String code becomes DB id
+    timelineCols.code.push(mappedCode);  // Numeric id becomes DB code
+    timelineCols.project_id.push(project[PROJECTS.CODE] ?? t.project_id ?? null);
+    appendDebugLog(`db.format: timeline mapped - DB id field=${mappedId}, DB code field=${mappedCode}, project_id=${project[PROJECTS.CODE]}`);
+    appendDebugLog(`db.format: timelineCols after push - id array=${JSON.stringify(timelineCols.id)}, code array=${JSON.stringify(timelineCols.code)}`);
+    timelineCols.creator_id.push(t.creator_id ?? null);
+    timelineCols.title.push(t.title ?? null);
+    timelineCols.description.push(t.description ?? null);
+    timelineCols.nodes.push(t.nodes ?? '[]');
+    timelineCols.links.push(t.links ?? '[]');
+    timelineCols.settings.push(t.settings ?? '{}');
+    timelineCols.created_at.push(t.created_at ?? null);
+    timelineCols.updated_at.push(t.updated_at ?? null);
+  }
+
 
   // Note: lore entries are not yet read/populated here; the `loreCols` array is
   // prepared so the upload flow can begin integrating lore support. When lore
@@ -336,6 +422,8 @@ export async function collectProjectData(projectPath: string): Promise<{project:
   lastLoadedNoteCols = noteCols;
   lastLoadedLoreCols = loreCols;
   lastLoadedRefCols = refCols;
+  lastLoadedTimelineCols = timelineCols;
+  lastLoadedTimelines = timelines.slice(); // Store timeline objects directly
 
   return {
     project,
@@ -344,14 +432,17 @@ export async function collectProjectData(projectPath: string): Promise<{project:
     notes: normNotes,
     refs: normRefs,
     lore: [],
+    timelines: timelines,
     chapter_ids: chapterCols.id.slice(),
     note_ids: noteCols.id.slice(),
     ref_ids: refCols.id.slice(),
     lore_ids: [],
+    timeline_ids: timelineCols.id.slice(),
     chapter_cols: chapterCols,
     note_cols: noteCols,
     ref_cols: refCols,
-    lore_cols: loreCols
+    lore_cols: loreCols,
+    timeline_cols: timelineCols
   };
 }
 
@@ -380,6 +471,10 @@ export function getLastLoadedLoreIds() {
   return lastLoadedLoreCols ? (lastLoadedLoreCols.id || []).slice() : [];
 }
 
+export function getLastLoadedTimelineIds() {
+  return lastLoadedTimelineCols ? (lastLoadedTimelineCols.id || []).slice() : [];
+}
+
 export function getLastLoadedChapterCols() {
   return lastLoadedChapterCols;
 }
@@ -394,6 +489,10 @@ export function getLastLoadedRefCols() {
 
 export function getLastLoadedLoreCols() {
   return lastLoadedLoreCols;
+}
+
+export function getLastLoadedTimelineCols() {
+  return lastLoadedTimelineCols;
 }
 
 /**
@@ -433,6 +532,10 @@ export function refColsToRows() {
 
 export function loreColsToRows() {
   return convertColsToRows(lastLoadedLoreCols);
+}
+
+export function timelineColsToRows() {
+  return convertColsToRows(lastLoadedTimelineCols);
 }
 
 /**
@@ -529,6 +632,32 @@ export function getNextLore(): Record<string, any> | null {
   return row;
 }
 
+export function getNextTimeline(): Record<string, any> | null {
+  if (!lastLoadedTimelines || !Array.isArray(lastLoadedTimelines) || lastLoadedTimelines.length === 0) return null;
+  
+  const timeline = lastLoadedTimelines.shift();
+  if (!timeline) return null;
+  
+  appendDebugLog(`db.format: getNextTimeline - timeline.id is null: ${timeline.id === null || timeline.id === undefined}`);
+  appendDebugLog(`db.format: getNextTimeline - timeline.code is null: ${timeline.code === null || timeline.code === undefined}`);
+  appendDebugLog(`NULL CHECK   db.upload: timeline row data - id: ${timeline.id}, code: ${timeline.code}`);
+  
+  // Return the timeline with field mapping applied for database
+  return {
+    id: timeline.code ?? null,        // String code becomes DB id <-- GRABBING timeline.code FROM LOCAL DIRECTORY
+    code: timeline.id ?? null,        // Numeric id becomes DB code <-- GRABBING timeline.id FROM LOCAL DIRECTORY  
+    project_id: timeline.project_id ?? null,
+    creator_id: timeline.creator_id ?? null,
+    title: timeline.title ?? null,
+    description: timeline.description ?? null,
+    nodes: timeline.nodes ?? '[]',
+    links: timeline.links ?? '[]', 
+    settings: timeline.settings ?? '{}',
+    created_at: timeline.created_at ?? null,
+    updated_at: timeline.updated_at ?? null
+  };
+}
+
 // Export functions that expose the private schema constants so callers can
 // inspect the column/key names used by the formatter/upload code.
 export function getProjectColumns() {
@@ -541,6 +670,10 @@ export function getCreatorColumns() {
 
 export function getLoreColumns() {
   return LORE;
+}
+
+export function getTimelineColumns() {
+  return TIMELINES;
 }
 
 /**

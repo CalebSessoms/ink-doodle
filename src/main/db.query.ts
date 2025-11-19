@@ -125,6 +125,21 @@ export async function getLoreIdsForCreator(creatorId: string): Promise<string[]>
 }
 
 /**
+ * Get all timeline ids (strings) for a given creator id.
+ */
+export async function getTimelineIdsForCreator(creatorId: string): Promise<string[]> {
+  const q = `SELECT id FROM timelines WHERE creator_id = $1;`;
+  const res = await pool.query(q, [creatorId]);
+  if (!res.rows || res.rows.length === 0) return [];
+  const out: string[] = [];
+  for (const r of res.rows) {
+    const v = (r as any).id;
+    if (v !== null && v !== undefined) out.push(String(v));
+  }
+  return out;
+}
+
+/**
  * Get a single project row by its `code` (the string used locally as the project id).
  * Returns the raw row object or null when not found.
  */
@@ -216,4 +231,24 @@ export async function getProjectLore(projectCode: string): Promise<any[]> {
   return res.rows || [];
 }
 
-export default { getColumnValue, getFirstRow, getProjectIdsForCreator, getChapterIdsForCreator, getNoteIdsForCreator, getRefIdsForCreator, getLoreIdsForCreator, getProjectInfo, getProjectEntries, getProjectLore };
+/**
+ * Get all timeline rows for a project identified by its `code`.
+ * Returns an array of timeline row objects (empty array when none found).
+ */
+export async function getProjectTimelines(projectCode: string): Promise<any[]> {
+  // Resolve project id first
+  const project = await getProjectInfo(projectCode);
+  if (!project) return [];
+  const projectId = project.id;
+
+  const timelinesQ = `SELECT id, code, project_id, creator_id, title, description,
+                nodes, links, settings, created_at, updated_at
+         FROM timelines
+         WHERE project_id = $1
+         ORDER BY id;`;
+
+  const res = await pool.query(timelinesQ, [projectId]);
+  return res.rows || [];
+}
+
+export default { getColumnValue, getFirstRow, getProjectIdsForCreator, getChapterIdsForCreator, getNoteIdsForCreator, getRefIdsForCreator, getLoreIdsForCreator, getTimelineIdsForCreator, getProjectInfo, getProjectEntries, getProjectLore, getProjectTimelines };

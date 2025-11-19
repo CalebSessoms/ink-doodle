@@ -1086,6 +1086,8 @@ async function _wireDebugLogPathEarly() {
 
     renderAllLinks();
     touchSave(); // Save timeline changes
+    // Also immediately save timeline data to ensure persistence
+    try { saveToDisk(); } catch (e) { dbg('timeline: immediate save after node removal failed: ' + (e?.message || e)); }
   }
 
   // ─────────────── Timeline Save/Load ───────────────
@@ -1095,11 +1097,44 @@ async function _wireDebugLogPathEarly() {
     try {
       const timelineFile = path.join(path.dirname(SAVE_FILE), 'timeline.json');
       
+      dbg(`timeline: saveTimelineData - starting save to ${timelineFile}`);
+      dbg(`timeline: saveTimelineData - current state: nodes=${Object.keys(state.timelineNodes || {}).length} links=${Object.keys(state.timelineLinks || {}).length}`);
+      
       // Clean up any stale links before saving
       cleanupStaleLinks();
       
-      // Build timeline data structure using entry codes
+      // Build timeline data structure with proper metadata
+      // Generate timeline ID and code if they don't exist
+      if (!state.timeline) {
+        state.timeline = {};
+      }
+      
+      // Generate timeline ID and code if they don't exist
+      if (!state.timeline.id) {
+        // Generate numeric ID (like other entities)
+        state.timeline.id = 1; // First timeline for project
+      }
+      
+      // Fix legacy string IDs - force conversion to numeric BEFORE creating timelineData
+      if (typeof state.timeline.id === 'string') {
+        state.timeline.id = 1;
+        dbg(`timeline: saveTimelineData - converted legacy string id to numeric: ${state.timeline.id}`);
+        // Force immediate save to update the workspace file
+        state.dirty = true;
+      }
+      
+      // Generate timeline code using project ID (like TMLPRJ-0001-000001)
+      if (!state.timeline.code) {
+        const projectId = state.project?.id || 1;
+        const projectStr = String(projectId).padStart(4, '0');
+        state.timeline.code = `TMLPRJ-${projectStr}-000001`;
+      }
+      
       const timelineData = {
+        id: state.timeline.id,  // This should now be numeric
+        code: state.timeline.code,
+        title: state.timeline.title || `${state.projectName || 'Project'} Timeline`,
+        description: state.timeline.description || 'Project timeline visualization',
         nodes: {},
         links: {}
       };
@@ -1147,6 +1182,9 @@ async function _wireDebugLogPathEarly() {
         dbg(`timeline: saveTimelineData - saving link ${linkId}: ${linkData.fromNode} -> ${linkData.toNode}`);
       }
       
+      dbg(`timeline: saveTimelineData - about to write file with ${Object.keys(timelineData.nodes).length} nodes, ${Object.keys(timelineData.links).length} links`);
+      dbg(`timeline: saveTimelineData - timeline data preview: ${JSON.stringify(timelineData, null, 2).slice(0, 500)}...`);
+      
       fs.writeFileSync(timelineFile, JSON.stringify(timelineData, null, 2), 'utf8');
       dbg(`timeline: saved ${Object.keys(timelineData.nodes).length} nodes and ${Object.keys(timelineData.links).length} links to ${timelineFile}`);
     } catch (e) {
@@ -1157,24 +1195,30 @@ async function _wireDebugLogPathEarly() {
   function loadTimelineData() {
     if (!SAVE_FILE || !path || !fs) return;
     
+    // Always clear existing timeline data first
+    clearTimelineData();
+    
     try {
       const timelineFile = path.join(path.dirname(SAVE_FILE), 'timeline.json');
       if (!fs.existsSync(timelineFile)) {
-        dbg('timeline: no timeline.json found, skipping load');
+        dbg('timeline: no timeline.json found, timeline cleared');
         return;
       }
       
       const data = JSON.parse(fs.readFileSync(timelineFile, 'utf8'));
       dbg(`timeline: loading ${Object.keys(data.nodes || {}).length} nodes and ${Object.keys(data.links || {}).length} links`);
       
-      // Clear existing timeline state
-      state.timelineNodes = {};
-      state.timelineLinks = {};
+      // Restore timeline metadata
+      if (!state.timeline) state.timeline = {};
+      state.timeline.id = data.id || state.timeline.id;
+      state.timeline.code = data.code || state.timeline.code;
+      state.timeline.title = data.title || state.timeline.title;
+      state.timeline.description = data.description || state.timeline.description;
       
-      // Clear existing timeline DOM
-      const canvas = ensureTimelineCanvas();
-      if (canvas) {
-        canvas.querySelectorAll('.timeline-node').forEach(n => n.remove());
+      // Fix legacy timeline format: ensure id is numeric
+      if (typeof state.timeline.id === 'string') {
+        state.timeline.id = 1; // Convert string id to numeric
+        dbg(`timeline: converted legacy string id to numeric: ${state.timeline.id}`);
       }
       
       // Track node ID mapping from saved to actual (needed when IDs change)
@@ -1278,6 +1322,8 @@ async function _wireDebugLogPathEarly() {
       delete state.timelineLinks[linkId];
       renderAllLinks();
       touchSave(); // Save timeline changes
+      // Also immediately save timeline data to ensure persistence
+      try { saveToDisk(); } catch (e) { dbg('timeline: immediate save after link removal failed: ' + (e?.message || e)); }
     } catch (e) {
       dbg('removeConnection error: ' + (e && e.message));
     }
@@ -1295,6 +1341,26 @@ async function _wireDebugLogPathEarly() {
     state.timelineSelection = { ids: [] };
     // hide rect if present
     try { if (_boxSelect.rectEl) _boxSelect.rectEl.classList.remove('visible'); } catch (e) {}
+  }
+  
+  function clearTimelineData() {
+    dbg('timeline: clearing all timeline data');
+    // Clear state
+    state.timelineNodes = {};
+    state.timelineLinks = {};
+    state.timelineSelection.ids = [];
+    state.timeline = {}; // Clear timeline metadata
+    
+    // Clear DOM
+    const canvas = ensureTimelineCanvas();
+    if (canvas) {
+      canvas.querySelectorAll('.timeline-node').forEach(n => n.remove());
+      // Clear any existing SVG links
+      const existingSvg = canvas.querySelector('svg');
+      if (existingSvg) {
+        existingSvg.remove();
+      }
+    }
   }
 
   function selectAllTimelineNodes() {
@@ -1717,6 +1783,8 @@ async function _wireDebugLogPathEarly() {
     } catch (e) { dbg('createTimelineNodeForEntry addHandle failed: ' + (e && e.message)); }
     dbg(`timeline: node created id=${nodeId} entry=${entry?.id} entryKey=${entryKeyVal} pos=${x},${y} color=${color} -> debug.log`);
     touchSave(); // Save timeline changes
+    // Also immediately save timeline data to ensure persistence
+    try { saveToDisk(); } catch (e) { dbg('timeline: immediate save failed: ' + (e?.message || e)); }
     return nodeId;
   }
 
@@ -3720,6 +3788,11 @@ function saveUIPrefsDebounced() {
       // (chapters/notes/references) because that can overwrite the
       // requested tab via state.prevActiveTab.
       if (tabName === 'lore') {
+        // Save timeline changes if switching away from timeline
+        if (prevActive === 'timeline' && state.dirty) {
+          dbg('switchTab: saving timeline changes before switching to lore');
+          try { saveToDisk(); } catch (e) { dbg('switchTab: timeline save failed: ' + (e?.message || e)); }
+        }
         // Preserve the previous active tab so we can restore it later when exiting Lore
         try { state.prevActiveTab = prevActive; } catch (e) {}
         // Ensure timeline is hidden when switching into lore
@@ -3734,7 +3807,12 @@ function saveUIPrefsDebounced() {
           if (el.timeline) el.timeline.classList.remove('hidden');
         } catch (e) { dbg(`switchTab -> show timeline failed: ${e?.message || e}`); }
       } else if (prevActive === 'lore' || prevActive === 'timeline') {
-        // We are coming out of Lore or Timeline into a story tab — restore story UI.
+        // We are coming out of Lore or Timeline into a story tab — save timeline changes first
+        if (prevActive === 'timeline' && state.dirty) {
+          dbg('switchTab: saving timeline changes before leaving timeline tab');
+          try { saveToDisk(); } catch (e) { dbg('switchTab: timeline save failed: ' + (e?.message || e)); }
+        }
+        // restore story UI.
         switchToStory();
       } else {
         // Switching between story tabs only — ensure writing tabs visible
@@ -3995,6 +4073,7 @@ function saveUIPrefsDebounced() {
     return {
       project: projMeta,
       entries: state.entries.map(stripUndefined),
+      timeline: state.timeline || {},
       version: 1
     };
   }
@@ -4416,7 +4495,9 @@ function saveUIPrefsDebounced() {
       }
       
       // Save timeline data
+      dbg(`workspace:save — About to call saveTimelineData() with ${Object.keys(state.timelineNodes || {}).length} nodes, ${Object.keys(state.timelineLinks || {}).length} links`);
       saveTimelineData();
+      dbg(`workspace:save — saveTimelineData() completed`);
       
       const t = new Date();
       el.lastSaved && (el.lastSaved.textContent = `Last saved • ${t.toLocaleTimeString()}`);
@@ -4728,6 +4809,28 @@ function saveUIPrefsDebounced() {
       
       // Load timeline data
       loadTimelineData();
+      
+      // Initialize timeline metadata if it doesn't exist
+      if (!state.timeline) {
+        state.timeline = {};
+      }
+      if (!state.timeline.id || !state.timeline.code) {
+        const projectId = state.project?.id || 1;
+        if (!state.timeline.id) {
+          const projectIdStr = String(projectId).padStart(4, '0');
+          const entryNumber = '000001';
+          state.timeline.id = `TMLPRJ-${projectIdStr}-${entryNumber}`;
+        }
+        if (!state.timeline.code) {
+          state.timeline.code = `TMLPRJ-${String(projectId).padStart(4, '0')}-000001`;
+        }
+        if (!state.timeline.title) {
+          state.timeline.title = `${state.projectName || 'Project'} Timeline`;
+        }
+        if (!state.timeline.description) {
+          state.timeline.description = 'Project timeline visualization';
+        }
+      }
       
       state.dirty = false;
       state.lastSavedAt = Date.now();
@@ -5260,6 +5363,9 @@ el.wordGoal?.addEventListener("input", () => {
         // First save workspace and project if needed
         if (state.dirty) {
           dbg("Saving workspace and project before logout...");
+          const nodeCount = Object.keys(state.timelineNodes || {}).length;
+          const linkCount = Object.keys(state.timelineLinks || {}).length;
+          dbg("timeline: pre-logout check - nodes: " + nodeCount + ", links: " + linkCount);
           await saveToWorkspaceAndProject();
         }
 
@@ -5281,6 +5387,9 @@ el.wordGoal?.addEventListener("input", () => {
         state.workspacePath = null;
         state.currentProjectDir = null;
         SAVE_FILE = null;
+        
+        // Clear timeline data
+        clearTimelineData();
 
         // Remove the existing login modal if it exists
         const oldModal = document.getElementById("login-modal-dynamic");

@@ -14,10 +14,12 @@ import {
   getNextNote,
 	getNextRef,
 	getNextLore,
+	getNextTimeline,
 	getLastLoadedChapterIds,
 	getLastLoadedNoteIds,
 	getLastLoadedRefIds,
 	getLastLoadedLoreIds,
+	getLastLoadedTimelineIds,
 } from './db.format';
 import { pool } from './db';
 import { getColumnValue, getFirstRow, getProjectIdsForCreator } from './db.query';
@@ -59,6 +61,7 @@ export async function uploadLocalProjects(rootDir: string, options?: { performUp
 	notes: { inserted: 0, updated: 0, errors: 0 },
 		refs: { inserted: 0, updated: 0, errors: 0 },
 		lore: { inserted: 0, updated: 0, errors: 0 },
+		timelines: { inserted: 0, updated: 0, errors: 0 },
 	conflicts: 0,
 	skipped: 0,
   } as any;
@@ -93,18 +96,22 @@ export async function uploadLocalProjects(rootDir: string, options?: { performUp
 		let localNoteCount = 0;
 		let localRefCount = 0;
 		let localLoreCount = 0;
+		let localTimelineCount = 0;
 		try {
 		const loadedChapterIds = getLastLoadedChapterIds();
 		const loadedNoteIds = getLastLoadedNoteIds();
 		const loadedRefIds = getLastLoadedRefIds();
 		const loadedLoreIds = getLastLoadedLoreIds();
+		const loadedTimelineIds = getLastLoadedTimelineIds();
 		localChapterCount = Array.isArray(loadedChapterIds) ? loadedChapterIds.length : 0;
 		localNoteCount = Array.isArray(loadedNoteIds) ? loadedNoteIds.length : 0;
 		localRefCount = Array.isArray(loadedRefIds) ? loadedRefIds.length : 0;
 		const localLoreCount = Array.isArray(loadedLoreIds) ? loadedLoreIds.length : 0;
-		appendDebugLog(`db.upload: loaded entries for project ${projectPath}: chapters=${localChapterCount} notes=${localNoteCount} refs=${localRefCount} lore=${localLoreCount}`);
+		localTimelineCount = Array.isArray(loadedTimelineIds) ? loadedTimelineIds.length : 0;
+		
+		appendDebugLog(`db.upload: loaded entries for project ${projectPath}: chapters=${localChapterCount} notes=${localNoteCount} refs=${localRefCount} lore=${localLoreCount} timelines=${localTimelineCount}`);
 		} catch (err) {
-			// ignore logging failures
+			appendDebugLog(`db.upload: failed to get loaded entry counts: ${(err as Error).message}`);
 		}
 
 	  // Record local project id for creator for deletion pass
@@ -537,9 +544,114 @@ export async function uploadLocalProjects(rootDir: string, options?: { performUp
 			appendDebugLog(`db.upload: failed iterating lore for project ${projectPath}: ${(err as Error).message}`);
 		}
 
+		// Iterate timelines one-at-a-time using getNextTimeline()
+		try {
+				// Log how many timeline rows we expect to process (best-effort)
+				try {
+					const loadedTimelineIds = getLastLoadedTimelineIds();
+					appendDebugLog(`db.upload: iterating timelines via getNextTimeline() for project ${projectPath}; expected=${Array.isArray(loadedTimelineIds)?loadedTimelineIds.length:0}`);
+				} catch (e) {
+					appendDebugLog(`db.upload: iterating timelines via getNextTimeline() for project ${projectPath}`);
+				}
+			while (true) {
+				const timelineRow = getNextTimeline();
+				if (!timelineRow) break;
+				const idVal = timelineRow?.id ?? timelineRow?.['id'] ?? null;
+				if (!idVal) continue;
+				try {
+					appendDebugLog(`db.upload: timeline check params for id=${idVal}`);
+					const existing = await getColumnValue('timelines', 'id', 'id = $1', [idVal]);
+					appendDebugLog(`db.upload: getColumnValue(timelines,id) returned ${existing ? 'FOUND' : 'NOT FOUND'} for param id=${idVal} and code=${timelineRow?.code}`);
+					if (existing) {
+						appendDebugLog(`db.upload: timeline exists id=${idVal}; will UPDATE (performUpload=${performUpload})`);
+						if (performUpload) {
+							const params = [
+								timelineRow.title ?? null,
+								timelineRow.description ?? null,
+								timelineRow.nodes ?? '[]',
+								timelineRow.links ?? '[]',
+								timelineRow.settings ?? '{}',
+								timelineRow.updated_at ?? new Date().toISOString(),
+								idVal
+							];
+							appendDebugLog(`db.upload: UPDATE timelines params=${JSON.stringify(params)}`);
+							try {
+								await pool.query(`UPDATE timelines SET title = $1, description = $2, nodes = $3, links = $4, settings = $5, updated_at = $6 WHERE id = $7`, params);
+								summary.timelines.updated += 1;
+							} catch (err) {
+								appendDebugLog(`db.upload: failed to update timeline id=${idVal}: ${(err as Error).message}`);
+								summary.timelines.errors += 1;
+							}
+						}
+					} else {
+						appendDebugLog(`db.upload: timeline id=${idVal} not found; checking by id-string (performUpload=${performUpload})`);
+						try {
+							const existingById = timelineRow?.id ? await getFirstRow('timelines', 'CAST(id AS text) = $1', [timelineRow.id]) : null;
+							if (existingById) {
+								appendDebugLog(`db.upload: timeline id-string match found for local id=${timelineRow.id}; will UPDATE row id=${existingById.id} (performUpload=${performUpload})`);
+								if (performUpload) {
+									const params = [
+										timelineRow.title ?? null,
+										timelineRow.description ?? null,
+										timelineRow.nodes ?? '[]',
+										timelineRow.links ?? '[]',
+										timelineRow.settings ?? '{}',
+										timelineRow.updated_at ?? new Date().toISOString(),
+										existingById.id
+									];
+									appendDebugLog(`db.upload: UPDATE timelines (by id-string) params=${JSON.stringify(params)}`);
+									try {
+										await pool.query(`UPDATE timelines SET title = $1, description = $2, nodes = $3, links = $4, settings = $5, updated_at = $6 WHERE id = $7`, params);
+										summary.timelines.updated += 1;
+									} catch (err) {
+										appendDebugLog(`db.upload: failed to update timeline (by id) id=${existingById.id}: ${(err as Error).message}`);
+										summary.timelines.errors += 1;
+									}
+								}
+							} else {
+								appendDebugLog(`db.upload: timeline id=${idVal} code=${timelineRow?.code} not found by id-string; will INSERT (performUpload=${performUpload})`);
+								if (performUpload) {
+									const params = [
+										timelineRow.id ?? null,
+										timelineRow.code ?? null,
+										timelineRow.project_id ?? null,
+										effectiveCreatorId,
+										timelineRow.title ?? null,
+										timelineRow.description ?? null,
+										timelineRow.nodes ?? '[]',
+										timelineRow.links ?? '[]',
+										timelineRow.settings ?? '{}',
+										timelineRow.created_at ?? new Date().toISOString(),
+										timelineRow.updated_at ?? new Date().toISOString()
+									];
+									appendDebugLog(`db.upload: INSERT timelines params=${JSON.stringify(params)}`);
+									appendDebugLog(`db.upload: timeline id=${idVal} code=${timelineRow?.code} AFTER PROCESSING params prepared`);
+									try {
+										await pool.query(`INSERT INTO timelines (id, code, project_id, creator_id, title, description, nodes, links, settings, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, params);
+										appendDebugLog(`db.upload: inserted timeline id=${idVal}`);
+										summary.timelines.inserted += 1;
+									} catch (err) {
+										appendDebugLog(`db.upload: failed to insert timeline id=${idVal}: ${(err as Error).message}`);
+										summary.timelines.errors += 1;
+										if (String((err as Error).message).toLowerCase().includes('duplicate')) summary.conflicts += 1;
+									}
+								}
+							}
+						} catch (err) {
+							appendDebugLog(`db.upload: error checking timeline by id for id=${idVal}: ${(err as Error).message}`);
+						}
+					}
+				} catch (err) {
+					appendDebugLog(`db.upload: error handling timeline id=${idVal} for project ${projectPath}: ${(err as Error).message}`);
+				}
+			}
+		} catch (err) {
+			appendDebugLog(`db.upload: failed iterating timelines for project ${projectPath}: ${(err as Error).message}`);
+		}
+
 			// Debug: finished processing this project — report loaded counts and running totals
 			try {
-				appendDebugLog(`db.upload: finished project ${projectPath}; localLoaded chapters=${localChapterCount} notes=${localNoteCount} refs=${localRefCount} lore=${localLoreCount ?? 0}; runningTotals projects(inserted=${summary.projects.inserted},updated=${summary.projects.updated},deleted=${summary.projects.deleted}) chapters(inserted=${summary.chapters.inserted},updated=${summary.chapters.updated}) notes(inserted=${summary.notes.inserted},updated=${summary.notes.updated}) refs(inserted=${summary.refs.inserted},updated=${summary.refs.updated}) lore(inserted=${summary.lore.inserted},updated=${summary.lore.updated}) conflicts=${summary.conflicts} errors(projects=${summary.projects.errors},chapters=${summary.chapters.errors},notes=${summary.notes.errors},refs=${summary.refs.errors},lore=${summary.lore.errors})`);
+				appendDebugLog(`db.upload: finished project ${projectPath}; localLoaded chapters=${localChapterCount} notes=${localNoteCount} refs=${localRefCount} lore=${localLoreCount ?? 0} timelines=${localTimelineCount ?? 0}; runningTotals projects(inserted=${summary.projects.inserted},updated=${summary.projects.updated},deleted=${summary.projects.deleted}) chapters(inserted=${summary.chapters.inserted},updated=${summary.chapters.updated}) notes(inserted=${summary.notes.inserted},updated=${summary.notes.updated}) refs(inserted=${summary.refs.inserted},updated=${summary.refs.updated}) lore(inserted=${summary.lore.inserted},updated=${summary.lore.updated}) timelines(inserted=${summary.timelines.inserted},updated=${summary.timelines.updated}) conflicts=${summary.conflicts} errors(projects=${summary.projects.errors},chapters=${summary.chapters.errors},notes=${summary.notes.errors},refs=${summary.refs.errors},lore=${summary.lore.errors},timelines=${summary.timelines.errors})`);
 			} catch (err) {
 				// ignore logging failures
 			}
@@ -553,12 +665,14 @@ export async function uploadLocalProjects(rootDir: string, options?: { performUp
 						const qNo = await pool.query(`SELECT COUNT(*) AS c FROM notes WHERE project_id = $1`, [projectIdForQuery]);
 						const qRf = await pool.query(`SELECT COUNT(*) AS c FROM refs WHERE project_id = $1`, [projectIdForQuery]);
 						const qLo = await pool.query(`SELECT COUNT(*) AS c FROM lore WHERE project_id = $1`, [projectIdForQuery]);
+						const qTl = await pool.query(`SELECT COUNT(*) AS c FROM timelines WHERE project_id = $1`, [projectIdForQuery]);
 						const dbCh = Number(qCh.rows?.[0]?.c ?? 0);
 						const dbNo = Number(qNo.rows?.[0]?.c ?? 0);
 						const dbRf = Number(qRf.rows?.[0]?.c ?? 0);
 						const dbLo = Number(qLo.rows?.[0]?.c ?? 0);
-						appendDebugLog(`db.upload: verification for project ${projectPath} (id=${projectIdForQuery}): local chapters=${localChapterCount} db chapters=${dbCh}; local notes=${localNoteCount} db notes=${dbNo}; local refs=${localRefCount} db refs=${dbRf}; local lore=${localLoreCount ?? 0} db lore=${dbLo}`);
-						if (dbCh !== localChapterCount || dbNo !== localNoteCount || dbRf !== localRefCount || dbLo !== (localLoreCount ?? 0)) {
+						const dbTl = Number(qTl.rows?.[0]?.c ?? 0);
+						appendDebugLog(`db.upload: verification for project ${projectPath} (id=${projectIdForQuery}): local chapters=${localChapterCount} db chapters=${dbCh}; local notes=${localNoteCount} db notes=${dbNo}; local refs=${localRefCount} db refs=${dbRf}; local lore=${localLoreCount ?? 0} db lore=${dbLo}; local timelines=${localTimelineCount ?? 0} db timelines=${dbTl}`);
+						if (dbCh !== localChapterCount || dbNo !== localNoteCount || dbRf !== localRefCount || dbLo !== (localLoreCount ?? 0) || dbTl !== (localTimelineCount ?? 0)) {
 							appendDebugLog(`db.upload: VERIFICATION MISMATCH for project ${projectPath} (id=${projectIdForQuery}).`);
 							summary.conflicts += 1;
 						}
