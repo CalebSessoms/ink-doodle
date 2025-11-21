@@ -9,8 +9,8 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { appendDebugLog } from './log';
 import { pool } from './db';
-import { getProjectIdsForCreator, getProjectInfo, getProjectEntries, getProjectLore } from './db.query';
-import { translateDbToLocal } from './db.format';
+import { getProjectIdsForCreator, getProjectInfo, getProjectEntries, getProjectLore, getProjectTimelines } from './db.query';
+import { translateDbToLocal, collectProjectData, getLastDbToLocalTimelines } from './db.format';
 
 /**
  * Retrieve full assembled payloads for every project belonging to the
@@ -127,6 +127,14 @@ export async function fullLoad(options?: { baseDir?: string; persist?: boolean; 
 					} catch (e) {
 						appendDebugLog(`db.load:fullLoad — failed to fetch lores for ${pid}: ${e?.message || e}`);
 					}
+					// Fetch timeline rows for this project and attach so translateDbToLocal can map them
+					try {
+						const timelines = await getProjectTimelines(pid);
+						// attach under `timelines` key for translateDbToLocal
+						(entries as any).timelines = timelines;
+					} catch (e) {
+						appendDebugLog(`db.load:fullLoad — failed to fetch timelines for ${pid}: ${e?.message || e}`);
+					}
 				// Choose folder name from title or id
 				const title = project?.title ? String(project.title) : '';
 				let folderName = sanitizeName(title) || String(pid);
@@ -157,7 +165,7 @@ export async function fullLoad(options?: { baseDir?: string; persist?: boolean; 
 
 						// Debug: log counts of fetched entry arrays before translation
 						try {
-							appendDebugLog(`db.load:fullLoad — processing project ${pid} title="${title}" entries: chapters=${(entries.chapters||[]).length} notes=${(entries.notes||[]).length} refs=${(entries.refs||[]).length} lores=${((entries as any).lores||[]).length}`);
+							appendDebugLog(`db.load:fullLoad — processing project ${pid} title="${title}" entries: chapters=${(entries.chapters||[]).length} notes=${(entries.notes||[]).length} refs=${(entries.refs||[]).length} lores=${((entries as any).lores||[]).length} timelines=${((entries as any).timelines||[]).length}`);
 						} catch (e) {
 							// ignore logging errors
 						}
@@ -167,6 +175,20 @@ export async function fullLoad(options?: { baseDir?: string; persist?: boolean; 
 							appendDebugLog(`db.load:fullLoad — translateDbToLocal failed for ${pid}: ${conv.error || 'no projects'}`);
 						} else {
 							const lp = conv.projects[0];
+							
+							// Process timeline data using getter functions like the upload process does
+							appendDebugLog(`db.load:fullLoad — processing timeline data for project ${pid}`);
+							const dbToLocalTimelines = getLastDbToLocalTimelines();
+							if (dbToLocalTimelines && dbToLocalTimelines.length > 0) {
+								appendDebugLog(`db.load:fullLoad — found ${dbToLocalTimelines.length} timeline(s) from translateDbToLocal for project ${pid}`);
+								for (let i = 0; i < dbToLocalTimelines.length; i++) {
+									const timeline = dbToLocalTimelines[i];
+									appendDebugLog(`db.load:fullLoad — timeline ${i}: id=${timeline?.id}, code=${timeline?.code}, title=${timeline?.title}`);
+								}
+							} else {
+								appendDebugLog(`db.load:fullLoad — no timeline data found from translateDbToLocal for project ${pid}`);
+							}
+							
 							// Write data/project.json with project and summary entries
 							const summaryEntries: any[] = [];
 							const pushSummary = (e: any, type: string, idx: number) => {
@@ -178,6 +200,8 @@ export async function fullLoad(options?: { baseDir?: string; persist?: boolean; 
 							lp.entries.refs.forEach((r: any, i: number) => pushSummary(r, 'reference', i));
 							// Include lore entries in the project summary list
 							(lp.entries.lore || []).forEach((l: any, i: number) => pushSummary(l, 'lore', i));
+							// Include timeline entries in the project summary list
+							(lp.entries.timelines || []).forEach((t: any, i: number) => pushSummary(t, 'timeline', i));
 
 							const pjPath = path.join(projectPath, 'data', 'project.json');
 							await fs.writeFile(pjPath, JSON.stringify({ project: lp.project, entries: summaryEntries }, null, 2), 'utf8');
@@ -201,6 +225,19 @@ export async function fullLoad(options?: { baseDir?: string; persist?: boolean; 
 							await writeEntries(lp.entries.refs, 'refs');
 							// Write lore entries
 							await writeEntries(lp.entries.lore || [], 'lore');
+
+							// Write timeline data as timeline.json in data directory (not individual files)
+							if (lp.entries.timelines && lp.entries.timelines.length > 0) {
+								// Use the first timeline for timeline.json (typically there's only one per project)
+								const timeline = lp.entries.timelines[0];
+								const timelineJsonPath = path.join(projectPath, 'data', 'timeline.json');
+								try {
+									await fs.writeFile(timelineJsonPath, JSON.stringify(timeline, null, 2), 'utf8');
+									appendDebugLog(`db.load:fullLoad — wrote timeline data to ${timelineJsonPath}`);
+								} catch (err) {
+									appendDebugLog(`db.load:fullLoad — failed to write timeline ${timelineJsonPath}: ${(err as Error).message}`);
+								}
+							}
 
 							appendDebugLog(`db.load:fullLoad — created project folder and files for ${pid} at ${projectPath}`);
 							created.push({ id: pid, path: projectPath });

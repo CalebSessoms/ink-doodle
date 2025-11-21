@@ -718,6 +718,10 @@ async function _wireDebugLogPathEarly() {
   // Ensure timeline canvas exists after DOMContentLoaded (some HTML may be injected later)
   function ensureTimelineCanvas() {
     if (!el.timelineCanvas) el.timelineCanvas = document.getElementById('timeline-canvas');
+    // Initialize box select handlers when canvas is first found
+    if (el.timelineCanvas) {
+      _installBoxSelectHandlers(el.timelineCanvas);
+    }
     return el.timelineCanvas;
   }
 
@@ -853,6 +857,56 @@ async function _wireDebugLogPathEarly() {
   // Box-selection state and group-drag state
   let _boxSelect = { active: false, rectEl: null, startCanvas: null };
   let _groupDrag = { active: false, nodeIds: [], startClientX: 0, startClientY: 0, startPositions: {} };
+
+  // Clear timeline selection
+  function clearTimelineSelection() {
+    try {
+      // Clear previous selection classes
+      if (state.timelineSelection && Array.isArray(state.timelineSelection.ids)) {
+        for (const id of state.timelineSelection.ids) {
+          const el = getNodeElement(id);
+          if (el) el.classList.remove('multi-selected');
+        }
+      }
+      // Reset selection state
+      state.timelineSelection.ids = [];
+    } catch (e) { 
+      dbg('clearTimelineSelection error: ' + (e && e.message)); 
+    }
+  }
+
+  // Debug function to check current selection state
+  function debugTimelineSelection() {
+    try {
+      const selectionIds = (state.timelineSelection && state.timelineSelection.ids) || [];
+      dbg(`DEBUG-SELECTION: Current selection has ${selectionIds.length} nodes: [${selectionIds.join(', ')}]`);
+      
+      // Check if nodes actually have the multi-selected class
+      for (const nodeId of selectionIds) {
+        const el = getNodeElement(nodeId);
+        if (el) {
+          const hasClass = el.classList.contains('multi-selected');
+          dbg(`DEBUG-SELECTION: Node ${nodeId} element found, multi-selected class: ${hasClass}`);
+        } else {
+          dbg(`DEBUG-SELECTION: Node ${nodeId} element NOT FOUND`);
+        }
+      }
+      
+      // Check all nodes for selection state
+      const allNodeIds = Object.keys(state.timelineNodes || {});
+      for (const nodeId of allNodeIds) {
+        const el = getNodeElement(nodeId);
+        if (el && el.classList.contains('multi-selected')) {
+          dbg(`DEBUG-SELECTION: Found multi-selected node in DOM: ${nodeId}`);
+        }
+      }
+    } catch (e) {
+      dbg(`debugTimelineSelection error: ${e && e.message}`);
+    }
+  }
+
+  // Make debug function available globally for console access
+  window.debugTimelineSelection = debugTimelineSelection;
 
   // Helpers to manage handles per-node
   function addHandleToNode(nodeId, used, side = 'right') {
@@ -1446,6 +1500,7 @@ async function _wireDebugLogPathEarly() {
         const rh = parseFloat(r.style.height || 0);
         // clear previous selection
         clearTimelineSelection();
+        dbg(`box-select: starting selection in rect (${rx}, ${ry}, ${rw}, ${rh})`);
         const ids = [];
         for (const nid in state.timelineNodes) {
           try {
@@ -1457,16 +1512,25 @@ async function _wireDebugLogPathEarly() {
             const nh = nodeEl.offsetHeight || 0;
             // Intersect test in logical coords
             const overlap = !(nx + nw < rx || nx > rx + rw || ny + nh < ry || ny > ry + rh);
+            dbg(`box-select: node ${nid} at (${nx}, ${ny}, ${nw}, ${nh}) overlap=${overlap}`);
             if (overlap) {
               ids.push(nid);
             }
-          } catch (e) { /* best-effort */ }
+          } catch (e) { dbg(`box-select: error checking node ${nid}: ${e?.message}`); }
         }
         state.timelineSelection.ids = ids;
+        dbg(`box-select: COMPLETED - selected ${ids.length} nodes: [${ids.join(', ')}]`);
         for (const id of ids) {
           const el = getNodeElement(id);
-          if (el) el.classList.add('multi-selected');
+          if (el) {
+            el.classList.add('multi-selected');
+            dbg(`box-select: added multi-selected class to node ${id}`);
+          } else {
+            dbg(`box-select: WARNING - could not find element for selected node ${id}`);
+          }
         }
+        // Debug the final selection state
+        setTimeout(() => debugTimelineSelection(), 100);
         // hide rectangle
         r.classList.remove('visible');
       } catch (e) { dbg('box select finish error: ' + (e && e.message)); }
@@ -1664,8 +1728,13 @@ async function _wireDebugLogPathEarly() {
   ev.preventDefault();
   node.setPointerCapture(ev.pointerId);
   const nodeId = node.dataset.nodeId;
+      dbg(`node-drag: pointerdown on node ${nodeId}`);
+      dbg(`node-drag: selection state - ids: [${(state.timelineSelection?.ids || []).join(', ')}]`);
+      dbg(`node-drag: checking if node ${nodeId} is in selection: ${state.timelineSelection && Array.isArray(state.timelineSelection.ids) && state.timelineSelection.ids.includes(nodeId)}`);
+      
       // If this node is part of the selection, start a group drag
       if (state.timelineSelection && Array.isArray(state.timelineSelection.ids) && state.timelineSelection.ids.includes(nodeId)) {
+        dbg(`group-drag: STARTING group drag with ${state.timelineSelection.ids.length} nodes: [${state.timelineSelection.ids.join(', ')}]`);
         _groupDrag.active = true;
         _groupDrag.nodeIds = state.timelineSelection.ids.slice();
         _groupDrag.startClientX = ev.clientX;
@@ -1673,13 +1742,20 @@ async function _wireDebugLogPathEarly() {
         _groupDrag.startPositions = {};
         for (const nid of _groupDrag.nodeIds) {
           const eln = getNodeElement(nid);
-          if (eln) _groupDrag.startPositions[nid] = { x: parseInt(eln.style.left || 0, 10), y: parseInt(eln.style.top || 0, 10) };
+          if (eln) {
+            const pos = { x: parseInt(eln.style.left || 0, 10), y: parseInt(eln.style.top || 0, 10) };
+            _groupDrag.startPositions[nid] = pos;
+            dbg(`group-drag: recorded start position for node ${nid}: (${pos.x}, ${pos.y})`);
+          } else {
+            dbg(`group-drag: WARNING - could not find element for node ${nid}`);
+          }
         }
         // don't start single-node dragging
         return;
       }
 
       // Single-node drag (fallback)
+      dbg(`single-node-drag: STARTING single node drag for ${nodeId}`);
       dragging = true;
       // store raw client start and precise origin (float) for free dragging
       start = { x: ev.clientX, y: ev.clientY };
@@ -1691,18 +1767,28 @@ async function _wireDebugLogPathEarly() {
         const s = state.timelineViewport.scale || 1;
         const dx = (ev.clientX - _groupDrag.startClientX) / s;
         const dy = (ev.clientY - _groupDrag.startClientY) / s;
+        dbg(`group-drag: MOVING ${_groupDrag.nodeIds.length} nodes by delta (${Math.round(dx)}, ${Math.round(dy)})`);
         for (const nid of _groupDrag.nodeIds) {
           try {
             const pos = _groupDrag.startPositions[nid];
-            if (!pos) continue;
+            if (!pos) {
+              dbg(`group-drag: WARNING - no start position for node ${nid}`);
+              continue;
+            }
             // free-drag: do not snap while moving
             const nx = pos.x + dx;
             const ny = pos.y + dy;
             const eln = getNodeElement(nid);
-            if (eln) { eln.style.left = `${nx}px`; eln.style.top = `${ny}px`; }
-          } catch (e) { /* best-effort per node */ }
+            if (eln) {
+              eln.style.left = `${nx}px`;
+              eln.style.top = `${ny}px`;
+              // dbg(`group-drag: moved node ${nid} to (${Math.round(nx)}, ${Math.round(ny)})`);
+            } else {
+              dbg(`group-drag: WARNING - could not find element for node ${nid}`);
+            }
+          } catch (e) { dbg(`group-drag: error moving node ${nid}: ${e?.message}`); }
         }
-        try { renderAllLinks(); } catch (e) { /* best-effort */ }
+        try { renderAllLinks(); } catch (e) { dbg(`group-drag: error rendering links: ${e?.message}`); }
         return;
       }
 
@@ -1722,12 +1808,16 @@ async function _wireDebugLogPathEarly() {
     node.addEventListener('pointerup', (ev) => {
       // If group dragging, persist all moved nodes
       if (_groupDrag.active) {
+        dbg(`group-drag: COMPLETING group drag for ${_groupDrag.nodeIds.length} nodes`);
         _groupDrag.active = false;
         try { node.releasePointerCapture(ev.pointerId); } catch (e) {}
         for (const nid of _groupDrag.nodeIds) {
           try {
             const eln = getNodeElement(nid);
-            if (!eln) continue;
+            if (!eln) {
+              dbg(`group-drag: WARNING - could not find element for node ${nid} during completion`);
+              continue;
+            }
             // snap to grid on drop
             const px = parseFloat(eln.style.left || 0);
             const py = parseFloat(eln.style.top || 0);
@@ -1738,12 +1828,14 @@ async function _wireDebugLogPathEarly() {
             state.timelineNodes[nid] = state.timelineNodes[nid] || {};
             state.timelineNodes[nid].x = sx;
             state.timelineNodes[nid].y = sy;
-          } catch (e) { /* best-effort */ }
+            dbg(`group-drag: finalized node ${nid} position at (${sx}, ${sy})`);
+          } catch (e) { dbg(`group-drag: error finalizing node ${nid}: ${e?.message}`); }
         }
         _groupDrag.nodeIds = [];
         _groupDrag.startPositions = {};
-        try { renderAllLinks(); } catch (e) { /* best-effort */ }
+        try { renderAllLinks(); } catch (e) { dbg(`group-drag: error rendering links after completion: ${e?.message}`); }
         touchSave(); // Save timeline position changes
+        dbg(`group-drag: COMPLETED group drag operation`);
         return;
       }
       if (!dragging) return;

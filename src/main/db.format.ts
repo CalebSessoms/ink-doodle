@@ -91,6 +91,8 @@ let lastLoadedRefCols: Record<string, any[]> | null = null;
 let lastLoadedLoreCols: Record<string, any[]> | null = null;
 let lastLoadedTimelineCols: Record<string, any[]> | null = null;
 let lastLoadedTimelines: any[] | null = null;
+// DB to local conversion variables
+let lastDbToLocalTimelines: any[] | null = null;
 
 export async function loadProjectForUpload(projectPath: string): Promise<any> {
   const data = await collectProjectData(projectPath);
@@ -677,6 +679,14 @@ export function getTimelineColumns() {
 }
 
 /**
+ * Get the last loaded timeline data from DB-to-local conversion.
+ * Returns an array of timeline objects or null if none loaded.
+ */
+export function getLastDbToLocalTimelines(): any[] | null {
+  return lastDbToLocalTimelines ? lastDbToLocalTimelines.slice() : null;
+}
+
+/**
  * translateDbToLocal
  * Convert a DB payload (project row + arrays of chapters/notes/refs) into
  * the local on-disk structure used by InkDoodleProjects. This should create
@@ -689,7 +699,7 @@ export function getTimelineColumns() {
  * `collectProjectData`). For now the function returns a not-implemented
  * result so callers can be wired without throwing.
  */
-export async function translateDbToLocal(dbPayloadOrPath?: any, options?: { baseDir?: string }): Promise<{ ok: boolean; projects?: Array<{ id?: any; project: any; entries: { chapters: any[]; notes: any[]; refs: any[]; lore: any[] } }>; error?: string }> {
+export async function translateDbToLocal(dbPayloadOrPath?: any, options?: { baseDir?: string }): Promise<{ ok: boolean; projects?: Array<{ id?: any; project: any; entries: { chapters: any[]; notes: any[]; refs: any[]; lore: any[]; timelines?: any[] } }>; error?: string }> {
   // If dbPayloadOrPath is a string path or omitted, read the temporary
   // JSON file from disk (defaults to process.cwd()/temporary.json).
   // Otherwise treat dbPayloadOrPath as an already-parsed payload object
@@ -808,6 +818,11 @@ export async function translateDbToLocal(dbPayloadOrPath?: any, options?: { base
       const loresIn = Array.isArray(dbEntries.lores) ? dbEntries.lores : (Array.isArray(dbEntries.lore) ? dbEntries.lore : []);
       appendDebugLog(`db.format:translateDbToLocal — mapping ${loresIn.length} lore entries for project ${localProjectId}`);
       const loresOut: any[] = [];
+      
+      // Map timeline entries if provided
+      const timelinesIn = Array.isArray(dbEntries.timelines) ? dbEntries.timelines : [];
+      appendDebugLog(`db.format:translateDbToLocal — mapping ${timelinesIn.length} timeline entries for project ${localProjectId}`);
+      const timelinesOut: any[] = [];
       for (let idx = 0; idx < loresIn.length; idx++) {
         const l = loresIn[idx];
         try {
@@ -874,8 +889,47 @@ export async function translateDbToLocal(dbPayloadOrPath?: any, options?: { base
           loresOut.push({ id: null, code: null, project_id: localProjectId, title: null, content: null });
         }
       }
+      
+      // Process timeline entries
+      for (let idx = 0; idx < timelinesIn.length; idx++) {
+        const t = timelinesIn[idx];
+        try {
+          const localId = (() => {
+            const num = Number(t.code ?? null);
+            return Number.isFinite(num) ? num : (t.code ?? null);
+          })();
+          const mapped = {
+            id: localId,
+            code: t.id ?? null,
+            project_id: localProjectId,
+            creator_id: t.creator_id ?? null,
+            title: t.title ?? null,
+            description: t.description ?? null,
+            nodes: typeof t.nodes === 'string' ? JSON.parse(t.nodes) : (t.nodes ?? []),
+            links: typeof t.links === 'string' ? JSON.parse(t.links) : (t.links ?? []),
+            settings: typeof t.settings === 'string' ? JSON.parse(t.settings) : (t.settings ?? {}),
+            created_at: t.created_at ?? null,
+            updated_at: t.updated_at ?? null
+          };
+          timelinesOut.push(mapped);
+          appendDebugLog(`db.format:translateDbToLocal — mapped timeline idx=${idx} id=${mapped.id} code=${mapped.code} title=${mapped.title}`);
+        } catch (e) {
+          appendDebugLog(`db.format:translateDbToLocal — failed mapping timeline index ${idx} for project ${localProjectId}: ${(e as Error).message}`);
+          timelinesOut.push({ id: null, code: null, project_id: localProjectId, title: null, description: null, nodes: [], links: [], settings: {} });
+        }
+      }
+      
+      // Store timelines in module variable for potential getter access
+      lastDbToLocalTimelines = timelinesOut.slice();
 
-      outProjects.push({ id: localProjectId, project: localProject, entries: { chapters: chaptersOut, notes: notesOut, refs: refsOut, lore: loresOut } });
+      const projectEntries = { 
+        chapters: chaptersOut, 
+        notes: notesOut, 
+        refs: refsOut, 
+        lore: loresOut,
+        timelines: timelinesOut
+      };
+      outProjects.push({ id: localProjectId, project: localProject, entries: projectEntries });
     }
 
     return { ok: true, projects: outProjects };
