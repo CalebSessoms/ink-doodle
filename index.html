@@ -201,6 +201,22 @@
       <section class="timeline hidden" id="timeline" aria-label="Timeline">
         <!-- Canvas: absolutely-positioned nodes will be placed inside -->
         <div id="timeline-canvas" class="timeline-canvas" tabindex="0" aria-label="Timeline canvas"></div>
+        <div id="timeline-bottom-bar" class="timeline-bottom-bar">
+          <div class="timeline-bar-header" style="display: flex; align-items: flex-start; justify-content: space-between; padding: 0 8px 0 8px;">
+            <div id="timeline-selector" class="timeline-selector" style="flex:1; display: flex; gap: 8px; align-items: center;">
+              <!-- Timeline selector buttons will be injected here -->
+            </div>
+            <div class="timeline-bar-actions" style="display: flex; flex-direction: column; align-items: flex-end; gap: 4px;">
+              <button id="timeline-create-btn" class="btn small" title="Create new relationship web" type="button">+</button>
+            </div>
+          </div>
+          <div class="timeline-horizontal-line"></div>
+          <div class="timeline-bar-footer" style="display: flex; justify-content: flex-end; padding: 2px 8px 0 8px;">
+            <div class="timeline-bar-actions" style="display: flex; flex-direction: column; align-items: flex-end; gap: 4px;">
+              <button id="timeline-delete-btn" class="btn small" title="Delete current relationship web" type="button">🗑</button>
+            </div>
+          </div>
+        </div>
       </section>
     </main>
   </div>

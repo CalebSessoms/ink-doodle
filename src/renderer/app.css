@@ -1,3 +1,40 @@
+.timeline-entry-marker {
+  position: absolute;
+  top: 0;
+  pointer-events: none;
+  z-index: 20;
+}
+.timeline-entry-dot {
+  position: absolute;
+  background: #222;
+  border-radius: 50%;
+  z-index: 21;
+}
+.timeline-entry-vline {
+  width: 1.5px;
+  height: 22px;
+  background: #222;
+  margin: 0 auto;
+  border-radius: 1px;
+}
+.timeline-entry-label {
+  text-align: center;
+  font-size: 11px;
+  font-weight: 500;
+  text-decoration: underline;
+  color: #222;
+  background: none;
+  pointer-events: none;
+  user-select: none;
+}
+.timeline-horizontal-line {
+  position: relative;
+  width: 100%;
+  height: 2px;
+  background: #b0b4ba;
+  border-radius: 1px;
+  margin: 0 0.5em;
+}
 :root {
   --bg: #ffffff;
   --fg: #111827;
@@ -679,17 +716,21 @@ body.theme-slate .body {
 /* Timeline canvas and nodes */
 .timeline {
   position: relative;
-  overflow: hidden; /* ensure canvas cannot visually escape the pane */
+  display: flex;
+  flex-direction: column;
+  min-height: 400px;
 }
 
 .timeline-canvas {
   position: relative;
+  flex: 1 1 auto;
+  min-height: 300px;
   width: 100%;
-  height: 100%; /* fill the timeline pane */
   background: transparent;
-  overflow: hidden; /* clip transformed content */
-  touch-action: none; /* we'll use pointer events */
-  transform-origin: 0 0; /* top-left origin simplifies math */
+  overflow: hidden;
+  touch-action: none;
+  transform-origin: 0 0;
+  margin-bottom: 0;
 }
 
 .timeline-node {
@@ -1006,5 +1047,69 @@ body.theme-slate .body {
 .timeline-node.multi-selected {
   box-shadow: 0 0 0 2px var(--accent), var(--shadow-2);
   z-index: 100;
+}
+
+/* Timeline bottom bar: always visible at the bottom of the timeline section */
+
+.timeline-bottom-bar {
+  position: relative;
+  min-height: 86px; /* 20% increase from 72px */
+  background: #f3f4f6;
+  border-top: 1px solid #d1d5db;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-end;
+  padding: 0 16px 6px 16px;
+  box-sizing: border-box;
+  z-index: 10;
+}
+
+.timeline-selector {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  min-height: 32px;
+}
+.timeline-selector-btn {
+  background: #fff;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 4px 14px;
+  font-size: 14px;
+  color: #374151;
+  cursor: pointer;
+  transition: background 0.15s, border 0.15s;
+}
+.timeline-selector-btn.selected {
+  background: #2563eb;
+  color: #fff;
+  border-color: #2563eb;
+}
+
+.timeline-canvas {
+  margin-bottom: 0;
+}
+
+.timeline {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 400px;
+  /* Ensure enough height for canvas + bar */
+}
+
+.timeline-canvas {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 240px;
+  width: 100%;
+  background: transparent;
+  overflow: hidden;
+  touch-action: none;
+  transform-origin: 0 0;
+  margin-bottom: 0;
 }
 
