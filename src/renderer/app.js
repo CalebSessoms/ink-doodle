@@ -1,36 +1,522 @@
-
-// Ensure 'path' is available in all scopes (fix ReferenceError in createTimeline and helpers)
-const path = require('path');
-
-// ───────────────── Debug helpers ─────────────────
-let LOG_FILE = null;
-const _dbgBuf = [];                // buffer while we don't know workspace
-function _dbgAppendToFile(line) {
+// Loads the currently selected relationship graph into the canvas
+async function loadSelectedGraphToCanvas() {
   try {
-    if (!fs || !path || !LOG_FILE) {
-      _dbgBuf.push(line);
-      // Always try to resolve log path immediately for any message
-      _wireDebugLogPathEarly().catch(() => {});
+    // 1. Get selected timeline code from selectedGraph in project.json
+    let selectedCode = null;
+    try {
+      const projectDir = state.currentProjectDir || state.workspacePath;
+      const fs = window.require ? window.require('fs') : null;
+      const path = window.require ? window.require('path') : null;
+      if (fs && path && projectDir) {
+        const projectJsonPath = path.join(projectDir, 'data', 'project.json');
+        if (fs.existsSync(projectJsonPath)) {
+          const projectData = JSON.parse(fs.readFileSync(projectJsonPath, 'utf8'));
+          if (projectData.selectedGraph) {
+            selectedCode = projectData.selectedGraph;
+          }
+        }
+      }
+    } catch (e) { dbg('loadSelectedGraphToCanvas: failed to read selectedGraph from project.json: ' + (e && e.message)); }
+    if (!selectedCode) {
+      selectedCode = state.selectedTimelineCode || (state.timeline && state.timeline.code);
+    }
+    if (!selectedCode) {
+      dbg('loadSelectedGraphToCanvas: No selected timeline code');
       return;
     }
-    fs.appendFileSync(LOG_FILE, line + "\n", "utf8");
-  } catch (_) { /* ignore */ }
+    // 2. Find timeline file for selected code
+    const projectDir = state.currentProjectDir || state.workspacePath;
+    const fs = window.require ? window.require('fs') : null;
+    const path = window.require ? window.require('path') : null;
+    if (!fs || !path || !projectDir) {
+      dbg('loadSelectedGraphToCanvas: missing fs, path, or projectDir');
+      return;
+    }
+    // Scan for timeline*.json files and match code
+    const dataDir = path.join(projectDir, 'data');
+    const files = fs.readdirSync(dataDir).filter(f => f.startsWith('timeline') && f.endsWith('.json'));
+    let timelineFile = null;
+    for (const f of files) {
+      const filePath = path.join(dataDir, f);
+      try {
+        const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        if (data.code === selectedCode) {
+          timelineFile = filePath;
+          break;
+        }
+      } catch (e) { continue; }
+    }
+    if (!timelineFile) {
+      dbg('loadSelectedGraphToCanvas: Timeline file not found for code ' + selectedCode);
+      return;
+    }
+    // 3. Load timeline data
+    const timelineData = JSON.parse(fs.readFileSync(timelineFile, 'utf8'));
+    // 4. Render graph into canvas (replace with your render logic)
+    if (typeof renderRelationshipGraph === 'function') {
+      renderRelationshipGraph(timelineData);
+      dbg('loadSelectedGraphToCanvas: Graph rendered for code ' + selectedCode);
+    } else {
+      dbg('loadSelectedGraphToCanvas: renderRelationshipGraph function not found');
+    }
+  } catch (err) {
+    dbg('loadSelectedGraphToCanvas: error ' + (err && err.message));
+  }
 }
+// Updates all timeline visuals by reading project.json, counting timelines, and updating the timeline bar
+async function updateAllTimelineVisuals() {
+  try {
+    // Find project.json (assume current project directory is available as state.currentProjectDir)
+    const fs = window.require ? window.require('fs') : null;
+    const path = window.require ? window.require('path') : null;
+    const projectDir = state.currentProjectDir || state.workspacePath;
+    if (!fs || !path || !projectDir) {
+      dbg('updateAllTimelineVisuals: missing fs, path, or projectDir');
+      return;
+    }
+    const projectJsonPath = path.join(projectDir, 'data', 'project.json');
+    if (!fs.existsSync(projectJsonPath)) {
+      dbg('updateAllTimelineVisuals: project.json not found');
+      return;
+    }
+    const projectData = JSON.parse(fs.readFileSync(projectJsonPath, 'utf8'));
+    const timelineEntries = (projectData.entries || []).filter(e => e.type === 'timeline');
+    dbg(`updateAllTimelineVisuals: found ${timelineEntries.length} timelines in project.json`);
+    // Sync state.timelines with project.json timelines
+    state.timelines = timelineEntries.map((e, idx) => ({
+      id: idx + 1,
+      code: e.code,
+      title: e.title || `Timeline ${idx + 1}`
+    }));
+    // Update the timeline selector UI inside the timeline bar
+    const bar = document.getElementById('timeline-bottom-bar');
+    if (!bar) {
+      dbg('updateAllTimelineVisuals: timeline bar element not found');
+      return;
+    }
+    const selector = bar.querySelector('#timeline-selector');
+    if (!selector) {
+      dbg('updateAllTimelineVisuals: timeline selector element not found');
+      return;
+    }
+    selector.innerHTML = '';
+    dbg(`updateAllTimelineVisuals: selector cleared, timelines count=${state.timelines.length}`);
+    for (const t of state.timelines) {
+      dbg(`updateAllTimelineVisuals: rendering selector button for code=${t.code}`);
+      const btn = document.createElement('button');
+      btn.className = 'timeline-selector-btn';
+      btn.textContent = t.title || t.code;
+      btn.dataset.code = t.code;
+      if (state.selectedTimelineCode === t.code) {
+        btn.classList.add('selected');
+      }
+      btn.title = 'Select relationship web';
+      btn.onclick = () => selectTimeline(t.code);
+      selector.appendChild(btn);
+    }
+    dbg('updateAllTimelineVisuals: timeline selector updated');
+  } catch (err) {
+    dbg('updateAllTimelineVisuals: error ' + (err && err.message));
+  }
+}
+// Timeline delete logic matching chapter delete pattern
+function confirmAndDeleteTimeline(code) {
+  if (!code) return;
+  dbg(`[confirmAndDeleteTimeline] Proceeding to delete timeline code=${code}`);
+  deleteTimeline(code);
+}
+
+function deleteTimeline(code) {
+  dbg(`[deleteTimeline] requested: ${code}`);
+  if (!state.timelines) {
+    dbg('[deleteTimeline] No timelines in state');
+    return;
+  }
+  const timeline = state.timelines.find(t => t.code === code);
+  if (!timeline) {
+    dbg(`[deleteTimeline] Timeline not found for code=${code}`);
+    return;
+  }
+  // Remove from state.timelines
+  state.timelines = state.timelines.filter(t => t.code !== code);
+  dbg(`[deleteTimeline] Removed from state.timelines. Remaining: ${state.timelines.map(t => t.code)}`);
+  // Remove from state.entries if present
+  if (state.entries) {
+    const before = state.entries.length;
+    state.entries = state.entries.filter(e => e.code !== code);
+    dbg(`[deleteTimeline] Removed from state.entries. Before: ${before}, After: ${state.entries.length}`);
+  }
+  // Delete the timeline file
+  const file = getTimelineFileNameByIndex(timeline.id || 1);
+  if (fs.existsSync(file)) {
+    try {
+      fs.unlinkSync(file);
+      dbg(`[deleteTimeline] Deleted file: ${file}`);
+    } catch (e) {
+      dbg(`[deleteTimeline] Error deleting file: ${e && e.message}`);
+    }
+  } else {
+    dbg(`[deleteTimeline] Timeline file does not exist: ${file}`);
+  }
+  // If the deleted timeline was selected, select another or clear
+  if (state.selectedTimelineCode === code) {
+    if (state.timelines.length > 0) {
+      state.selectedTimelineCode = state.timelines[0].code;
+      selectTimeline(state.selectedTimelineCode);
+      dbg(`[deleteTimeline] Selected next timeline: ${state.selectedTimelineCode}`);
+    } else {
+      state.selectedTimelineCode = null;
+      state.timeline = null;
+      state.timelineNodes = {};
+      state.timelineLinks = {};
+      dbg('[deleteTimeline] No timelines left, cleared selection and state');
+      if (typeof updateTimelineSelector === 'function') updateTimelineSelector();
+      if (typeof clearTimelineRenderer === 'function') clearTimelineRenderer();
+    }
+  } else {
+    if (typeof updateTimelineSelector === 'function') updateTimelineSelector();
+    if (state.timeline && state.timeline.code === code && typeof clearTimelineRenderer === 'function') {
+      clearTimelineRenderer();
+    }
+  }
+  // Force a custom event to notify any listeners/UI components
+  if (typeof window !== 'undefined') {
+    const evt = new CustomEvent('timelines-updated', { detail: { timelines: state.timelines } });
+    window.dispatchEvent(evt);
+    dbg('[deleteTimeline] Dispatched timelines-updated event');
+  }
+  dbg(`[deleteTimeline] Deleted timeline: code=${code}, title="${timeline.title || ''}"`);
+}
+// New robust timeline select function, matching chapter select pattern
+function selectTimeline(code) {
+  dbg(`selectTimeline -> requested: ${String(code)}`);
+  if (!state.timelines) {
+    dbg('selectTimeline -> no timelines in state');
+    return;
+  }
+  // Save the current timeline's state before switching
+  if (state.timeline && state.timeline.code) {
+    try {
+      const path = window.require ? window.require('path') : null;
+      const fs = window.require ? window.require('fs') : null;
+      const workspaceDir = state.workspacePath;
+      if (fs && path && workspaceDir) {
+        // Find the file for the current timeline
+        const timelineFiles = fs.readdirSync(path.join(workspaceDir, 'data')).filter(f => f.startsWith('timeline') && f.endsWith('.json'));
+        for (const f of timelineFiles) {
+          const filePath = path.join(workspaceDir, 'data', f);
+          try {
+            const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+            if (data.code === state.timeline.code) {
+              // Save the current in-memory nodes/links to the file
+              const updated = { ...state.timeline, nodes: { ...state.timelineNodes }, links: { ...state.timelineLinks } };
+              fs.writeFileSync(filePath, JSON.stringify(updated, null, 2), 'utf8');
+              dbg('selectTimeline: saved previous timeline state to file: ' + filePath);
+              break;
+            }
+          } catch (e) { continue; }
+        }
+      }
+    } catch (e) {
+      dbg('selectTimeline: error saving previous timeline: ' + (e && e.message));
+    }
+  }
+  const timeline = state.timelines.find(t => t.code === code);
+  if (timeline) {
+    dbg(`selectTimeline -> resolved to code=${timeline.code} id=${timeline.id} title="${timeline.title || ''}"`);
+    state.selectedTimelineCode = timeline.code;
+    // Update selectedGraph in project.json
+    try {
+      const fs = window.require ? window.require('fs') : null;
+      const path = window.require ? window.require('path') : null;
+      const workspaceDir = state.workspacePath;
+      if (fs && path && workspaceDir) {
+        const projectJsonPath = path.join(workspaceDir, 'data', 'project.json');
+        dbg(`[selectTimeline] Attempting to update selectedGraph in WORKSPACE: ${projectJsonPath} to value: ${timeline.code}`);
+        if (fs.existsSync(projectJsonPath)) {
+          const projectData = JSON.parse(fs.readFileSync(projectJsonPath, 'utf8'));
+          if (projectData.selectedGraph !== timeline.code) {
+            projectData.selectedGraph = timeline.code;
+            fs.writeFileSync(projectJsonPath, JSON.stringify(projectData, null, 2), 'utf8');
+            dbg(`[selectTimeline] Successfully updated selectedGraph in WORKSPACE ${projectJsonPath} to: ${timeline.code}`);
+          } else {
+            dbg(`[selectTimeline] selectedGraph already set to ${timeline.code} in WORKSPACE ${projectJsonPath}`);
+          }
+        } else {
+          dbg(`[selectTimeline] project.json does not exist at: ${projectJsonPath}`);
+        }
+      } else {
+        dbg('[selectTimeline] fs, path, or workspaceDir missing');
+      }
+    } catch (e) { dbg('[selectTimeline] failed to update selectedGraph in workspace project.json: ' + (e && e.message)); }
+    // Find timeline file by matching code property in timeline*.json files
+    const path = window.require ? window.require('path') : null;
+    const fs = window.require ? window.require('fs') : null;
+    const projectDir = state.currentProjectDir || state.workspacePath;
+    if (!fs || !path || !projectDir) {
+      dbg('selectTimeline: missing fs, path, or projectDir');
+      return;
+    }
+    // Always use workspacePath for timeline file lookup
+    const dataDir = path.join(state.workspacePath, 'data');
+    // Extract timeline number from code (e.g., TMLPRJ-0001-000002 => 2)
+    let timelineNum = 1;
+    const codeMatch = /TMLPRJ-\d+-([0-9]+)/.exec(timeline.code);
+    if (codeMatch && codeMatch[1]) {
+      timelineNum = parseInt(codeMatch[1], 10);
+    }
+    let timelineFile = null;
+    if (timelineNum === 1) {
+      timelineFile = path.join(dataDir, 'timeline.json');
+    } else {
+      timelineFile = path.join(dataDir, `timeline${timelineNum}.json`);
+    }
+    if (timelineFile && fs.existsSync(timelineFile)) {
+      try {
+        const data = JSON.parse(fs.readFileSync(timelineFile, 'utf8'));
+        state.timeline = { ...data };
+        state.timelineNodes = { ...data.nodes };
+        state.timelineLinks = { ...data.links };
+        dbg('selectTimeline -> loaded timeline file and updated state');
+        // Load and render timeline data on canvas
+        if (typeof loadTimelineData === 'function') {
+          loadTimelineData();
+          dbg('selectTimeline -> called loadTimelineData');
+        }
+        // Also load the selected relationship graph into the canvas
+        if (typeof loadSelectedGraphToCanvas === 'function') {
+          loadSelectedGraphToCanvas();
+          dbg('selectTimeline -> called loadSelectedGraphToCanvas');
+        }
+      } catch (e) {
+        dbg('selectTimeline -> error reading timeline file: ' + (e && e.message));
+      }
+    } else {
+      dbg('selectTimeline -> timeline file does not exist for code: ' + timeline.code + ' (expected file: ' + timelineFile + ')');
+      state.timeline = null;
+      state.timelineNodes = {};
+      state.timelineLinks = {};
+      if (typeof loadTimelineData === 'function') {
+        loadTimelineData();
+        dbg('selectTimeline -> called loadTimelineData (empty)');
+      }
+    }
+    if (typeof updateTimelineSelector === 'function') {
+      updateTimelineSelector();
+      dbg('selectTimeline -> called updateTimelineSelector');
+    }
+  } else {
+    dbg(`selectTimeline -> no timeline resolved for ${String(code)}`);
+    state.selectedTimelineCode = code;
+    state.timeline = null;
+    state.timelineNodes = {};
+    state.timelineLinks = {};
+    // Also update selectedGraph in project.json for unresolved code
+    try {
+      const projectDir = state.currentProjectDir || state.workspacePath;
+      const fs = window.require ? window.require('fs') : null;
+      const path = window.require ? window.require('path') : null;
+      if (fs && path && projectDir) {
+        const projectJsonPath = path.join(projectDir, 'data', 'project.json');
+        if (fs.existsSync(projectJsonPath)) {
+          const projectData = JSON.parse(fs.readFileSync(projectJsonPath, 'utf8'));
+          if (projectData.selectedGraph !== code) {
+            projectData.selectedGraph = code;
+            fs.writeFileSync(projectJsonPath, JSON.stringify(projectData, null, 2), 'utf8');
+            dbg('selectTimeline: updated selectedGraph in project.json (unresolved)');
+          }
+        }
+      }
+    } catch (e) { dbg('selectTimeline: failed to update selectedGraph in project.json (unresolved): ' + (e && e.message)); }
+    if (typeof updateTimelineSelector === 'function') {
+      updateTimelineSelector();
+      dbg('selectTimeline -> called updateTimelineSelector');
+    }
+  }
+}
+
+
+// Ensure 'fs', 'path', and 'ipcRenderer' are available in all scopes
+let fs, path, ipcRenderer;
+
+// Global debounce handle for autosave
+let autosaveDebounce = null;
+
+// Autosave debounce delay (ms)
+const AUTOSAVE_IDLE_MS = 2000;
+try {
+  fs = require('fs');
+  path = require('path');
+  ipcRenderer = require('electron').ipcRenderer;
+} catch (e) {
+  // If running in a context where require('electron') is not available, fallback to window.ipcRenderer if present
+  if (typeof window !== 'undefined') {
+    if (window.fs) fs = window.fs;
+    if (window.path) path = window.path;
+    if (window.ipcRenderer) ipcRenderer = window.ipcRenderer;
+  }
+}
+
+// ───────────────── Debug helpers ─────────────────
 function dbg(msg) {
   const stamp = new Date().toISOString();
   const line  = `[${stamp}] ${String(msg)}`;
   console.log("[debug]", msg);
-  _dbgAppendToFile(line);
-  // Also forward every renderer debug line to the main process so it appears in the global log
+  // Only forward every renderer debug line to the main process so it appears in the global log
   try { if (ipcRenderer && ipcRenderer.invoke) ipcRenderer.invoke('debug:append', { line }).catch(() => {}); } catch (_) { /* best-effort */ }
   const b = document.getElementById("debug-banner");
   if (b) b.textContent = `[debug] ${msg}`;
 }
 
 // ──────────────── Timeline Multi-File Logic ────────────────
+
+
+(() => {
+  // Disable timeline creation button if SAVE_FILE is not set
+  document.addEventListener('DOMContentLoaded', () => {
+    const timelineBtn = document.getElementById('timeline-create-btn');
+    if (timelineBtn) {
+      if (!SAVE_FILE) {
+        timelineBtn.disabled = true;
+        timelineBtn.title = 'Load or create a project first';
+      } else {
+        timelineBtn.disabled = false;
+        timelineBtn.title = '';
+      }
+    }
+    // Force timeline selector refresh on load
+    if (typeof updateTimelineSelector === 'function') {
+      dbg('DOMContentLoaded: calling updateTimelineSelector');
+      updateTimelineSelector();
+    } else {
+      dbg('DOMContentLoaded: updateTimelineSelector not defined');
+    }
+  });
+
+  // Place all timeline-related functions here so they share scope
+  function getTimelineDir() {
+    return TIMELINE_WORKSPACE_DATA;
+  }
+  function getTimelineFileNameByIndex(index) {
+    const base = path.join(getTimelineDir(), 'timeline');
+    return index === 1 ? `${base}.json` : `${base}${index}.json`;
+  }
+  function getNextTimelineIndexAndFile() {
+    const dir = getTimelineDir();
+    let maxIndex = 0;
+    let used = new Set();
+    if (fs && fs.existsSync(dir)) {
+      const files = fs.readdirSync(dir);
+      for (const f of files) {
+        const m = f.match(/^timeline(\d*)\.json$/);
+        if (m) {
+          const idx = m[1] ? parseInt(m[1], 10) : 1;
+          used.add(idx);
+          if (idx > maxIndex) maxIndex = idx;
+        }
+      }
+    }
+    let nextIndex = 1;
+    while (used.has(nextIndex)) nextIndex++;
+    return { index: nextIndex, file: getTimelineFileNameByIndex(nextIndex) };
+  }
+  function getNextTimelineIndex() {
+    const dir = getTimelineDir();
+    let maxIndex = 0;
+    if (fs && fs.existsSync(dir)) {
+      const files = fs.readdirSync(dir);
+      for (const f of files) {
+        const m = f.match(/^timeline(\d*)\.json$/);
+        if (m) {
+          const idx = m[1] ? parseInt(m[1], 10) : 1;
+          if (idx > maxIndex) maxIndex = idx;
+        }
+      }
+    }
+    return maxIndex + 1;
+  }
+  // Removed duplicate selectTimeline. All code should use the main selectTimeline function defined above.
+  function updateTimelineSelector() {
+    dbg('updateTimelineSelector: TOP OF FUNCTION');
+    const selector = document.getElementById('timeline-selector');
+    if (!selector) {
+      dbg('updateTimelineSelector: timeline-selector element not found');
+      return;
+    }
+    selector.innerHTML = '';
+    if (!state.timelines) state.timelines = [];
+    dbg(`updateTimelineSelector: state.timelines.length=${state.timelines.length}`);
+    for (const t of state.timelines) {
+      dbg(`updateTimelineSelector: rendering selector button for code=${t.code}`);
+      const btn = document.createElement('button');
+      btn.className = 'timeline-selector-btn';
+      btn.textContent = t.title || t.code;
+      btn.dataset.code = t.code;
+      if (state.timeline && state.timeline.code === t.code) {
+        btn.classList.add('selected');
+      }
+      btn.title = 'Select relationship web';
+      btn.onclick = () => selectTimeline(t.code);
+      selector.appendChild(btn);
+    }
+    const createBtn = document.getElementById('timeline-create-btn');
+    if (createBtn) {
+      createBtn.onclick = async () => {
+        dbg('Create button clicked (handler entry)');
+        const defaultTitle = `Relationship Web ${state.timelines ? state.timelines.length + 1 : 1}`;
+        dbg('Create button about to call createTimeline');
+        await createTimeline({ title: defaultTitle });
+        dbg('Create button: createTimeline finished with: ' + defaultTitle);
+      };
+    }
+    const deleteBtn = document.getElementById('timeline-delete-btn');
+    if (deleteBtn) {
+      deleteBtn.onclick = () => {
+        if (state.timeline && state.timeline.code) {
+          if (confirm('Delete this relationship web? This cannot be undone.')) {
+            confirmAndDeleteTimeline(state.timeline.code);
+          }
+        }
+      };
+    }
+    const bar = document.getElementById('timeline-bottom-bar');
+    if (!bar) {
+      dbg('updateTimelineSelector: timeline-bottom-bar element not found');
+      return;
+    }
+    bar.querySelectorAll('.timeline-entry-marker').forEach(el => el.remove());
+    const horizontalLine = bar.querySelector('.timeline-horizontal-line');
+    if (!horizontalLine) {
+      dbg('updateTimelineSelector: .timeline-horizontal-line not found');
+      return;
+    }
+    horizontalLine.querySelectorAll('.timeline-entry-marker').forEach(el => el.remove());
+    if (!state.timelines || state.timelines.length === 0) {
+      dbg('updateTimelineSelector: no timelines to display');
+      return;
+    }
+    let lineWidth = horizontalLine.offsetWidth;
+    let lineHeight = horizontalLine.offsetHeight;
+    dbg(`updateTimelineSelector: horizontalLine.offsetWidth=${horizontalLine.offsetWidth}, offsetHeight=${horizontalLine.offsetHeight}`);
+    if (!lineWidth || lineWidth < 10) {
+      lineWidth = 400;
+      dbg('updateTimelineSelector: using fallback lineWidth=400');
+    }
+    if (!lineHeight || lineHeight < 2) {
+      lineHeight = 2;
+      dbg('updateTimelineSelector: using fallback lineHeight=2');
+    }
+    const margin = 24;
+    const usableWidth = Math.max(1, lineWidth - 2 * margin);
+    const n = state.timelines.length;
+    dbg(`updateTimelineSelector: rendering ${n} timeline selector buttons, lineWidth=${lineWidth}, usableWidth=${usableWidth}`);
+    // Only create selector buttons here, no markers or dots
+  }
+})();
 // Assumes timelines are stored as timeline-<code>.json in the same directory as timeline.json
 
 // Use the correct workspace path for timeline and project.json
+// DEBUG: Confirm getTimelineFileName is defined at load
 const TIMELINE_WORKSPACE_DATA = 'c:/Users/caleb/AppData/Roaming/ink-doodle/workspace/data';
 const PROJECT_JSON_PATH = TIMELINE_WORKSPACE_DATA + '/project.json';
 
@@ -84,93 +570,47 @@ function getNextTimelineIndex() {
   return maxIndex + 1;
 }
 
+// ───────────────── Autosave engine ─────────────────
+function markDirty() {
+  state.dirty = true;
+  if (typeof el !== 'undefined' && el && el.saveState) {
+    el.saveState.textContent = "Unsaved (autosave) …";
+  }
+}
+function scheduleAutosave() {
+  clearTimeout(autosaveDebounce);
+  autosaveDebounce = setTimeout(() => {
+    if (state.dirty) saveToDisk();
+  }, AUTOSAVE_IDLE_MS);
+}
+
 async function createTimeline({ title, description }) {
-  dbg('createTimeline called (new logic)');
-  try {
-    // Generate unique code/id
-    const code = `TML-${Date.now()}`;
-    const id = Date.now();
-    // Create a new relationshipweb entry
-    const entry = {
-      id,
-      code,
-      title: title || `Relationship Web ${state.timelines ? state.timelines.length + 1 : 1}`,
-      type: 'relationshipweb',
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      order_index: (state.entries && state.entries.length) ? state.entries.length : 0,
-      description: description || '',
-      nodes: {},
-      links: {}
-    };
-    if (!state.entries) state.entries = [];
-    state.entries.push(entry);
-    dbg('Relationship web entry added to state.entries: ' + code);
-    // Add to state.timelines for selector
-    if (!state.timelines) state.timelines = [];
-    state.timelines.push({ id, code, title: entry.title });
-    dbg('Timeline added to state: ' + code);
-    // Persist to disk using the unified save logic
-    await saveToDisk();
-    dbg('saveToDisk called from createTimeline');
-    // Select new timeline and update state
-    selectTimeline(code);
-    dbg('selectTimeline called from createTimeline');
-    updateTimelineSelector && updateTimelineSelector();
-    dbg('updateTimelineSelector called from createTimeline');
-  } catch (e) {
-    dbg('Error in createTimeline: ' + (e && e.message));
-  }
+    // 1. Call selectTimeline with the selectedGraph code from project.json
+    const fs = window.require ? window.require('fs') : null;
+    const path = window.require ? window.require('path') : null;
+    const workspaceDir = state.workspacePath;
+    if (fs && path && workspaceDir) {
+      const projectJsonPath = path.join(workspaceDir, 'data', 'project.json');
+      if (fs.existsSync(projectJsonPath)) {
+        try {
+          const projectData = JSON.parse(fs.readFileSync(projectJsonPath, 'utf8'));
+          let selectedCode = null;
+          if (projectData.selectedGraph) {
+            selectedCode = projectData.selectedGraph;
+          } else if (Array.isArray(projectData.entries) && projectData.entries.length > 0) {
+            selectedCode = projectData.entries[0].code;
+          }
+          if (selectedCode && typeof selectTimeline === 'function') {
+            selectTimeline(selectedCode);
+          }
+        } catch (e) {
+          dbg('createTimeline: failed to call selectTimeline: ' + (e && e.message));
+        }
+      }
+    }
 }
 
-function selectTimeline(code) {
-  dbg('selectTimeline called with: ' + code);
-  try {
-    // Save current timeline if any
-    if (state.timeline && state.timeline.code) {
-      saveTimelineData();
-      dbg('saveTimelineData called in selectTimeline');
-    }
-    // Load new timeline
-    const file = getTimelineFileName(code);
-    if (!fs.existsSync(file)) {
-      dbg('Timeline file does not exist: ' + file);
-      return;
-    }
-    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-    state.timeline = { ...data };
-    // Rebuild nodes/links in state
-    state.timelineNodes = { ...data.nodes };
-    state.timelineLinks = { ...data.links };
-    dbg('Timeline loaded and state updated: ' + code);
-    updateTimelineSelector && updateTimelineSelector();
-    dbg('updateTimelineSelector called from selectTimeline');
-  } catch (e) {
-    dbg('Error in selectTimeline: ' + (e && e.message));
-  }
-}
 
-function deleteTimeline(code) {
-  // Remove from disk
-  const file = getTimelineFileName(code);
-  if (fs.existsSync(file)) fs.unlinkSync(file);
-  // Remove from state
-  if (state.timelines) state.timelines = state.timelines.filter(t => t.code !== code);
-  // If currently selected, clear or select another
-  if (state.timeline && state.timeline.code === code) {
-    state.timeline = null;
-    state.timelineNodes = {};
-    state.timelineLinks = {};
-    // Select another if available
-    if (state.timelines && state.timelines.length > 0) {
-      selectTimeline(state.timelines[0].code);
-    } else {
-      updateTimelineSelector && updateTimelineSelector();
-    }
-  } else {
-    updateTimelineSelector && updateTimelineSelector();
-  }
-}
 // src/renderer/app.js
 // Project Picker + Workspace I/O + Drag-and-Drop Reorder + Delete + Menu integration + Autosave
 /* eslint-disable @typescript-eslint/no-var-requires */
@@ -231,49 +671,7 @@ function dbg(msg) {
   if (b) b.textContent = `[debug] ${msg}`;
 }
 
-// NEW: resolve debug log target ASAP using main's active workspace
-async function _wireDebugLogPathEarly() {
-  if (!ipcRenderer || !path) return;
-  try {
-    // First try to get active workspace path
-    const r = await ipcRenderer.invoke("project:activePath");
-    if (r?.ok && r.activePath) {
-      LOG_FILE = path.join(r.activePath, "debug.log");
-    } else {
-      // Fallback: Try to get global app log path from main
-      const globalLog = await ipcRenderer.invoke("debug:getGlobalLogPath");
-      if (globalLog?.ok && globalLog.path) {
-        LOG_FILE = globalLog.path;
-      } else {
-        // Final fallback: Use app's root folder
-        const appRoot = await ipcRenderer.invoke("app:getPath", { name: "userData" });
-        if (appRoot?.ok) {
-          LOG_FILE = path.join(appRoot.path, "debug.log");
-        }
-      }
-    }
 
-    if (LOG_FILE) {
-      // Ensure log directory exists
-      try {
-        const logDir = path.dirname(LOG_FILE);
-        if (!fs.existsSync(logDir)) {
-          fs.mkdirSync(logDir, { recursive: true });
-        }
-      } catch (e) {
-        console.warn("Failed to create log directory:", e);
-      }
-
-      // Flush any buffered lines
-      for (const ln of _dbgBuf.splice(0, _dbgBuf.length)) {
-        try { fs.appendFileSync(LOG_FILE, ln + "\n", "utf8"); } catch {}
-      }
-      dbg(`debug log wired → ${LOG_FILE}`);
-    }
-  } catch (e) {
-    console.warn("Failed to wire debug log:", e);
-  }
-}
 
 (function banner() {
   const b = document.createElement("div");
@@ -299,7 +697,7 @@ async function _wireDebugLogPathEarly() {
         try {
           dbg('auth:fullLoadDone received — refreshing project list');
           // refreshProjectList is declared later; call it (function declarations are hoisted)
-          try { refreshProjectList(); } catch (e) { dbg(`refreshProjectList failed: ${e?.message || e}`); }
+            try { refreshProjectList(); } catch (e) { dbg(`refreshProjectList failed: ${e?.message || e}`); }
         } catch (e) { /* best-effort */ }
       });
     }
@@ -346,6 +744,14 @@ async function _wireDebugLogPathEarly() {
 
   // Will be set after we know workspacePath:
   let SAVE_FILE = null; // <workspace>/data/project.json
+
+  function setSaveFileFromWorkspace() {
+    if (state.workspacePath && path) {
+      SAVE_FILE = path.join(state.workspacePath, "data", "project.json");
+    } else {
+      SAVE_FILE = null;
+    }
+  }
 
   // ───────────── Finder Modal ─────────────
   let finderEl = null;
@@ -986,7 +1392,6 @@ async function _wireDebugLogPathEarly() {
   function renderAllLinks() {
     const svg = ensureTimelineSVG();
     if (!svg) return;
-    dbg(`timeline: renderAllLinks count=${Object.keys(state.timelineLinks || {}).length}`);
     // clear existing persistent paths
     svg.querySelectorAll('path.link').forEach(p => p.remove());
 
@@ -1318,206 +1723,157 @@ async function _wireDebugLogPathEarly() {
   }
 
   // ─────────────── Timeline Save/Load ───────────────
-  function saveTimelineData() {
-    if (!path || !fs) return;
-    
-    try {
-      const timelineFile = path.join(path.dirname(SAVE_FILE), 'timeline.json');
-      
-      dbg(`timeline: saveTimelineData - starting save to ${timelineFile}`);
-      dbg(`timeline: saveTimelineData - current state: nodes=${Object.keys(state.timelineNodes || {}).length} links=${Object.keys(state.timelineLinks || {}).length}`);
-      
-      // Clean up any stale links before saving
-      cleanupStaleLinks();
-      
-      // Build timeline data structure with proper metadata
-      // Generate timeline ID and code if they don't exist
-      if (!state.timeline) {
-        state.timeline = {};
-      }
-      
-      // Generate timeline ID and code if they don't exist
-      if (!state.timeline.id) {
-        // Generate numeric ID (like other entities)
-        state.timeline.id = 1; // First timeline for project
-      }
-      
-      // Fix legacy string IDs - force conversion to numeric BEFORE creating timelineData
-      if (typeof state.timeline.id === 'string') {
-        state.timeline.id = 1;
-        dbg(`timeline: saveTimelineData - converted legacy string id to numeric: ${state.timeline.id}`);
-        // Force immediate save to update the workspace file
-        state.dirty = true;
-      }
-      
-      // Generate timeline code using project ID (like TMLPRJ-0001-000001)
-      if (!state.timeline.code) {
-        const projectId = state.project?.id || 1;
-        const projectStr = String(projectId).padStart(4, '0');
-        state.timeline.code = `TMLPRJ-${projectStr}-000001`;
-      }
-      
-      const timelineData = {
-        id: state.timeline.id,  // This should now be numeric
-        code: state.timeline.code,
-        title: state.timeline.title || `${state.projectName || 'Project'} Timeline`,
-        description: state.timeline.description || 'Project timeline visualization',
-        nodes: {},
-        links: {}
-      };
-      
-      // Convert nodes to use entry codes
-      for (const [nodeId, nodeData] of Object.entries(state.timelineNodes || {})) {
-        if (!nodeData.entryId) {
-          dbg(`timeline: saveTimelineData - skipping node ${nodeId} - no entryId`);
-          continue;
-        }
-        
-        // Find the entry using entryKey lookup
-        dbg(`timeline: saveTimelineData - looking up entry for nodeData.entryId=${nodeData.entryId}`);
-        const entry = findEntryByKey(nodeData.entryId);
-        if (!entry || !entry.code) {
-          dbg(`timeline: saveTimelineData - skipping node ${nodeId} - entry not found or no code. entryId=${nodeData.entryId} found=${!!entry} code=${entry?.code}`);
-          continue;
-        }
-        dbg(`timeline: saveTimelineData - found entry for node ${nodeId}: code=${entry.code} type=${entry.type} title=${entry.title}`);
-        
-        timelineData.nodes[nodeId] = {
-          entryCode: entry.code,
-          x: nodeData.x || 0,
-          y: nodeData.y || 0,
-          color: nodeData.color || null,
-          handles: nodeData.handles || []
-        };
-      }
-      
-      // Copy links directly, but only if both nodes exist
-      for (const [linkId, linkData] of Object.entries(state.timelineLinks || {})) {
-        // Verify both nodes exist in current timeline
-        if (!state.timelineNodes[linkData.fromNode] || !state.timelineNodes[linkData.toNode]) {
-          dbg(`timeline: saveTimelineData - skipping link ${linkId} - missing nodes (from: ${linkData.fromNode} exists: ${!!state.timelineNodes[linkData.fromNode]}, to: ${linkData.toNode} exists: ${!!state.timelineNodes[linkData.toNode]})`);
-          continue;
-        }
-        
-        timelineData.links[linkId] = {
-          fromNode: linkData.fromNode,
-          fromHandle: linkData.fromHandle,
-          toNode: linkData.toNode,
-          toHandle: linkData.toHandle,
-          cpOffset: linkData.cpOffset || { x: 0, y: 0 }
-        };
-        dbg(`timeline: saveTimelineData - saving link ${linkId}: ${linkData.fromNode} -> ${linkData.toNode}`);
-      }
-      
-      dbg(`timeline: saveTimelineData - about to write file with ${Object.keys(timelineData.nodes).length} nodes, ${Object.keys(timelineData.links).length} links`);
-      dbg(`timeline: saveTimelineData - timeline data preview: ${JSON.stringify(timelineData, null, 2).slice(0, 500)}...`);
-      
-      fs.writeFileSync(timelineFile, JSON.stringify(timelineData, null, 2), 'utf8');
-      dbg(`timeline: saved ${Object.keys(timelineData.nodes).length} nodes and ${Object.keys(timelineData.links).length} links to ${timelineFile}`);
-    } catch (e) {
-      dbg(`timeline: save failed: ${e?.message || e}`);
-    }
-  }
+// Deduplicated: keep only this definition of saveTimelineData
   
-  function updateTimelineSelector() {
-    // Relationship web selector UI
-    const selector = document.getElementById('timeline-selector');
-    if (!selector) return;
-    selector.innerHTML = '';
-    if (!state.timelines) state.timelines = [];
-    // Render a button for each relationship web
-    for (const t of state.timelines) {
-      const btn = document.createElement('button');
-      btn.className = 'timeline-selector-btn';
-      btn.textContent = t.title || t.code;
-      btn.dataset.code = t.code;
-      if (state.timeline && state.timeline.code === t.code) {
-        btn.classList.add('selected');
-      }
-      btn.title = 'Select relationship web';
-      btn.onclick = () => selectTimeline(t.code);
-      selector.appendChild(btn);
-    }
 
-    // Wire up create button (above line)
-    const createBtn = document.getElementById('timeline-create-btn');
-    if (createBtn) {
-      createBtn.onclick = async () => {
-        dbg('Create button clicked');
-        const defaultTitle = `Relationship Web ${state.timelines ? state.timelines.length + 1 : 1}`;
-        await createTimeline({ title: defaultTitle });
-        dbg('createTimeline finished with: ' + defaultTitle);
-      };
+// --- Relationship Web Selector and Marker UI ---
+function updateTimelineSelector() {
+  dbg('updateTimelineSelector: TOP OF FUNCTION');
+  dbg(`updateTimelineSelector: state.timelines = ${JSON.stringify(state.timelines)}`);
+  // Relationship web selector UI
+  const selector = document.getElementById('timeline-selector');
+  if (!selector) {
+    dbg('updateTimelineSelector: timeline-selector element not found');
+    return;
+  }
+  selector.innerHTML = '';
+  if (!state.timelines) state.timelines = [];
+  dbg(`updateTimelineSelector: state.timelines.length=${state.timelines.length}`);
+  // Render a button for each relationship web
+  for (const t of state.timelines) {
+    dbg(`updateTimelineSelector: rendering selector button for code=${t.code}, title=${t.title}`);
+    const btn = document.createElement('button');
+    btn.className = 'timeline-selector-btn';
+    btn.textContent = t.title || t.code;
+    btn.dataset.code = t.code;
+    if (state.timeline && state.timeline.code === t.code) {
+      btn.classList.add('selected');
     }
-    // Wire up delete button (below line)
-    const deleteBtn = document.getElementById('timeline-delete-btn');
-    if (deleteBtn) {
-      deleteBtn.onclick = () => {
-        if (state.timeline && state.timeline.code) {
-          if (confirm('Delete this relationship web? This cannot be undone.')) {
-            deleteTimeline(state.timeline.code);
+    btn.title = 'Select relationship web';
+    btn.onclick = () => selectTimeline(t.code);
+    selector.appendChild(btn);
+  }
+
+  // Wire up create button (above line)
+  // Enable create button for timeline creation
+  const createBtn = document.getElementById('timeline-create-btn');
+  if (createBtn) {
+    createBtn.disabled = false;
+    createBtn.title = '';
+    createBtn.onclick = async () => {
+      dbg('Timeline create button pressed');
+      // 1. Find timeline directory and count existing timeline*.json files
+      const dir = path.dirname(SAVE_FILE);
+      let maxIndex = 0;
+      let used = new Set();
+      if (fs && fs.existsSync(dir)) {
+        const files = fs.readdirSync(dir);
+        for (const f of files) {
+          const m = f.match(/^timeline(\d*)\.json$/);
+          if (m) {
+            const idx = m[1] ? parseInt(m[1], 10) : 1;
+            used.add(idx);
+            if (idx > maxIndex) maxIndex = idx;
           }
         }
-      };
-    }
-
-    // --- Relationship Web Entry Visualization (only for selected web) ---
-    const bar = document.getElementById('timeline-bottom-bar');
-    if (!bar) return;
-    bar.querySelectorAll('.timeline-entry-marker').forEach(el => el.remove());
-
-    // Only render entry markers for the selected relationship web
-    if (!state.timeline || !state.timeline.code || !state.timelineNodes) return;
-    const entries = [];
-    for (const nodeId in state.timelineNodes) {
-      const node = state.timelineNodes[nodeId];
-      if (!node || !node.entryId) continue;
-      const entry = state.entries.find(e => e && (e.id === node.entryId || e.code === node.entryId));
-      if (entry) {
-        entries.push({ nodeId, entry, x: node.x || 0 });
       }
-    }
-    entries.sort((a, b) => a.x - b.x);
-
-    // Place all markers as children of the horizontal line for perfect alignment
-    const horizontalLine = bar.querySelector('.timeline-horizontal-line');
-    if (!horizontalLine) return;
-    // Remove any old dots
-    horizontalLine.querySelectorAll('.timeline-entry-marker').forEach(el => el.remove());
-
-    const lineWidth = horizontalLine.offsetWidth;
-    const lineHeight = horizontalLine.offsetHeight;
-    const margin = 24; // px from left/right
-    const usableWidth = Math.max(1, lineWidth - 2 * margin);
-    const n = entries.length;
-    if (n === 0) return;
-    for (let i = 0; i < n; ++i) {
-      const { entry } = entries[i];
-      const frac = n === 1 ? 0.5 : i / (n - 1);
-      const x = margin + frac * usableWidth;
-      const dotSize = Math.max(8, Math.round(lineHeight * 3)); // 3x line height for visibility
-      const marker = document.createElement('div');
-      marker.className = 'timeline-entry-marker';
-      marker.style.position = 'absolute';
-      marker.style.left = `${x - dotSize / 2}px`;
-      // Move the dot 4 dot heights above the line
-      marker.style.top = `${-dotSize * 3.5 + lineHeight / 2}px`;
-      marker.style.width = `${dotSize}px`;
-      marker.style.height = `${dotSize}px`;
-      marker.style.pointerEvents = 'none';
-      const dot = document.createElement('div');
-      dot.className = 'timeline-entry-dot';
-      dot.style.position = 'absolute';
-      dot.style.left = '0';
-      dot.style.top = '0';
-      dot.style.width = `${dotSize}px`;
-      dot.style.height = `${dotSize}px`;
-      dot.style.background = '#222';
-      dot.style.borderRadius = '50%';
-      marker.appendChild(dot);
-      horizontalLine.appendChild(marker);
-    }
+      // Find the lowest available index (fill gaps)
+      let nextIndex = 1;
+      while (used.has(nextIndex)) nextIndex++;
+      // 2. Compute id and code
+      const id = nextIndex;
+      const projectId = state.project?.id || 1;
+      const projectStr = String(projectId).padStart(4, '0');
+      const code = `TMLPRJ-${projectStr}-${String(id).padStart(6, '0')}`;
+      // 3. Compute filename
+      const timelineFile = nextIndex === 1
+        ? path.join(dir, 'timeline.json')
+        : path.join(dir, `timeline${nextIndex}.json`);
+      // 4. Build timeline object
+      const entry = {
+        id,
+        code,
+        title: `Relationship Web ${id}`,
+        description: 'Project timeline visualization',
+        nodes: {},
+        links: {},
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        type: 'relationshipweb'
+      };
+      // 5. Write file
+      if (fs && fs.writeFileSync) {
+        fs.writeFileSync(timelineFile, JSON.stringify(entry, null, 2), 'utf8');
+        dbg('Created new timeline file: ' + timelineFile);
+      }
+      // 6. Add to state
+      if (!state.entries) state.entries = [];
+      state.entries.push(entry);
+      if (!state.timelines) state.timelines = [];
+      state.timelines.push({ id, code, title: entry.title });
+      state.dirty = true;
+      markDirty();
+      scheduleAutosave();
+      // 7. Select new timeline and update UI
+      if (typeof selectTimeline === 'function') selectTimeline(code);
+      if (typeof updateTimelineSelector === 'function') updateTimelineSelector();
+    };
   }
+  // Wire up delete button (below line)
+  const deleteBtn = document.getElementById('timeline-delete-btn');
+  if (deleteBtn) {
+    deleteBtn.onclick = () => {
+      if (state.timeline && state.timeline.code) {
+        if (confirm('Delete this relationship web? This cannot be undone.')) {
+          deleteTimeline(state.timeline.code);
+        }
+      }
+    };
+  }
+
+  // --- Relationship Web Entry Visualization (all webs) ---
+  const bar = document.getElementById('timeline-bottom-bar');
+  if (!bar) {
+    dbg('updateTimelineSelector: timeline-bottom-bar element not found');
+    return;
+  }
+  dbg('updateTimelineSelector: found timeline-bottom-bar');
+  bar.querySelectorAll('.timeline-entry-marker').forEach(el => el.remove());
+
+  // Place all markers for all timelines
+  const horizontalLine = bar.querySelector('.timeline-horizontal-line');
+  if (!horizontalLine) {
+    dbg('updateTimelineSelector: .timeline-horizontal-line not found');
+    return;
+  }
+  dbg('updateTimelineSelector: found .timeline-horizontal-line');
+  horizontalLine.querySelectorAll('.timeline-entry-marker').forEach(el => el.remove());
+
+  if (!state.timelines || state.timelines.length === 0) {
+    dbg('updateTimelineSelector: no timelines to display');
+    return;
+  }
+  dbg(`updateTimelineSelector: about to render ${state.timelines.length} markers`);
+
+  // For each timeline, place a marker
+  let lineWidth = horizontalLine.offsetWidth;
+  let lineHeight = horizontalLine.offsetHeight;
+  dbg(`updateTimelineSelector: horizontalLine.offsetWidth=${horizontalLine.offsetWidth}, offsetHeight=${horizontalLine.offsetHeight}`);
+  if (!lineWidth || lineWidth < 10) {
+    lineWidth = 400; // fallback width
+    dbg('updateTimelineSelector: using fallback lineWidth=400');
+  }
+  if (!lineHeight || lineHeight < 2) {
+    lineHeight = 2; // fallback height
+    dbg('updateTimelineSelector: using fallback lineHeight=2');
+  }
+  dbg(`updateTimelineSelector: using lineWidth=${lineWidth}, lineHeight=${lineHeight}`);
+  const margin = 24; // px from left/right
+  const usableWidth = Math.max(1, lineWidth - 2 * margin);
+  const n = state.timelines.length;
+  dbg(`updateTimelineSelector: rendering ${n} timeline selector buttons, lineWidth=${lineWidth}, usableWidth=${usableWidth}`);
+  // Only create selector buttons here, no markers or dots
+}
 
   function loadTimelineData() {
     if (!path || !fs) return;
@@ -1589,7 +1945,12 @@ async function _wireDebugLogPathEarly() {
       }
       
       renderAllLinks();
-      updateTimelineSelector();
+      if (typeof updateTimelineSelector === 'function') {
+        dbg('loadTimelineData: calling updateTimelineSelector');
+        updateTimelineSelector();
+      } else {
+        dbg('loadTimelineData: updateTimelineSelector not defined');
+      }
       dbg('timeline: load completed successfully');
     } catch (e) {
       dbg(`timeline: load failed: ${e?.message || e}`);
@@ -2420,8 +2781,7 @@ async function _wireDebugLogPathEarly() {
     canvas.dataset.tlHandlersInstalled = '1';
 
     canvas.addEventListener('dragover', (ev) => {
-      // allow drop; log for debugging
-      dbg(`timeline: dragover at client=${ev.clientX},${ev.clientY}`);
+      // allow drop
       ev.preventDefault(); // allow drop
     });
 
@@ -2821,7 +3181,7 @@ async function _wireDebugLogPathEarly() {
     if (!state._docTabHandlerInstalled) {
       document.addEventListener('click', (e) => {
         try {
-          const btn = e.target && e.target.closest ? e.target.closest('.tabs-writing .tab[data-tab]') : null;
+          const btn = e.target && e.target.closest ? e.target.closest('.tabs-writing .tab[data-tab], .top-tabs .top-tab[data-tab]') : null;
           if (!btn) return;
           const t = btn.dataset.tab;
           dbg(`docTopLevelTabHandler click -> tab=${t}`);
@@ -2829,6 +3189,11 @@ async function _wireDebugLogPathEarly() {
           if (t === state.activeTab) { dbg(`docTopLevelTabHandler -> already active ${t}`); return; }
           // call switchTab if available
           try { if (typeof switchTab === 'function') switchTab(t); else dbg('docTopLevelTabHandler: switchTab not defined yet'); } catch (er) { dbg('docTopLevelTabHandler error: ' + (er && er.message)); }
+          // If timeline tab is activated, refresh timeline selector
+          if (t === 'timeline' && typeof updateTimelineSelector === 'function') {
+            dbg('Tab switched to timeline: calling updateTimelineSelector');
+            updateTimelineSelector();
+          }
         } catch (err) { dbg('docTopLevelTabHandler outer error: ' + (err && err.message)); }
       }, true);
       state._docTabHandlerInstalled = true;
@@ -3356,7 +3721,7 @@ function saveUIPrefsDebounced() {
           // Update application state with the new project
           state.workspacePath = loadResult.activePath;
           state.currentProjectDir = loadResult.currentProjectDir || createResult.projectPath;
-          SAVE_FILE = path.join(state.workspacePath, "data", "project.json");
+          setSaveFileFromWorkspace();
 
           // Load the project data
           await appLoadFromDisk();
@@ -3526,25 +3891,34 @@ function saveUIPrefsDebounced() {
         const deleteBtn = row.querySelector('[data-act="delete"]');
 
         loadBtn.addEventListener("click", async () => {
+
           try {
             loadBtn.disabled = true;
             loadBtn.textContent = "Loading...";
-            
+
             // Verify project data exists and is valid
             const projectFile = path.join(item.dir, 'data', 'project.json');
             if (!fs.existsSync(projectFile)) {
               throw new Error('Project data not found. The project may be corrupted.');
             }
 
+            let projectData;
             try {
               // Parse project JSON and tolerate missing/empty fields.
-              let projectData = JSON.parse(fs.readFileSync(projectFile, 'utf8'));
+              projectData = JSON.parse(fs.readFileSync(projectFile, 'utf8'));
 
               // Ensure minimal shape so downstream code can read safely
               if (!projectData || typeof projectData !== 'object') projectData = {};
               if (!projectData.project || typeof projectData.project !== 'object') projectData.project = {};
               if (!Array.isArray(projectData.entries)) projectData.entries = projectData.entries || [];
 
+              // Initialize selectedGraph if not present
+              if (!('selectedGraph' in projectData)) {
+                projectData.selectedGraph = null;
+                // Write back to disk immediately
+                fs.writeFileSync(projectFile, JSON.stringify(projectData, null, 2), 'utf8');
+                dbg('Initialized selectedGraph field in project.json');
+              }
               // No migration or strict validation here — the app expects some fields may be empty
               // Use display fallbacks elsewhere (displayTitle already falls back to item.name)
             } catch (parseError) {
@@ -3594,9 +3968,10 @@ function saveUIPrefsDebounced() {
             // Update state with new project info
             state.workspacePath = r.activePath;
             state.currentProjectDir = r.currentProjectDir || item.dir;
-            SAVE_FILE = path.join(state.workspacePath, "data", "project.json");
+            setSaveFileFromWorkspace();
 
             await appLoadFromDisk();
+            try { updateAllTimelineVisuals(); } catch (e) { dbg(`updateAllTimelineVisuals failed: ${e?.message || e}`); }
             hideProjectPicker();
             dbg(`Successfully loaded project from ${item.dir}`);
           } catch (error) {
@@ -3801,13 +4176,23 @@ function saveUIPrefsDebounced() {
   // ───────────────── Delete ─────────────────
   function confirmAndDelete(id) {
     const entry = state.entries.find(e => e.id === id || e.code === id || entryKey(e) === String(id));
-    if (!entry) return;
+    dbg(`[confirmAndDelete] Called for id=${id} resolvedKey=${entry ? entryKey(entry) : 'null'}`);
+    if (!entry) {
+      dbg(`[confirmAndDelete] No entry found for id=${id}`);
+      return;
+    }
     const kind = entry.type === "chapter" ? "Chapter" :
                  entry.type === "note" ? "Note" : "Reference";
     const name = entry.title || `(Untitled ${kind})`;
-    if (!confirm(`Delete ${kind}:\n"${name}"?\nThis cannot be undone.`)) return;
+    const confirmed = confirm(`Delete ${kind}:\n"${name}"?\nThis cannot be undone.`);
+    dbg(`[confirmAndDelete] Confirmation for entryKey=${entryKey(entry)} id=${entry.id} type=${entry.type}: ${confirmed}`);
+    if (!confirmed) {
+      dbg(`[confirmAndDelete] Cancelled delete for entryKey=${entryKey(entry)} id=${entry.id} type=${entry.type}`);
+      return;
+    }
     // Delete by stable key (prefer code) to avoid numeric id collisions across types
     const key = entryKey(entry);
+    dbg(`[confirmAndDelete] Proceeding to delete entryKey=${key} id=${entry.id} type=${entry.type}`);
     deleteEntry(key);
   }
 
@@ -4586,12 +4971,12 @@ function saveUIPrefsDebounced() {
     }
 
     // Save each entry to its own file.
-    // Prefer to reuse an existing on-disk file for the same logical entry (match by id or code)
-    // so we preserve the project's original filename format (compact or canonical).
+    // For chapters, always use canonical code-based filename
     let filename;
     try {
-      // If this entry was loaded from a specific filename, prefer reusing it
-      if (entry.__filename && fs.existsSync(path.join(typeDir, entry.__filename))) {
+      if (entry.type === 'chapter' && entry.code && typeof entry.code === 'string' && entry.code.trim()) {
+        filename = `${entry.code}.json`;
+      } else if (entry.__filename && fs.existsSync(path.join(typeDir, entry.__filename))) {
         filename = entry.__filename;
         dbg(`workspace:save — reusing original filename ${type}/${filename} for entry id=${entry.id} code=${entry.code}`);
       } else {
@@ -4664,69 +5049,141 @@ function saveUIPrefsDebounced() {
           const type = view.type || raw.type || 'chapter';
           const allowedByType = {
             // Note: intentionally omit `order_index` from per-item files — it belongs in data/project.json only
-            chapter: ['id','code','project_id','creator_id','title','content','body','status','summary','synopsis','tags','created_at','updated_at','word_goal'],
+            chapter: [
+              'id',
+              'code',
+              'project_id',
+              'creator_id',
+              'title',
+              'content',
+              'status',
+              'summary',
+              'tags',
+              'created_at',
+              'updated_at',
+              'word_goal',
+              'synopsis'
+            ],
             note: ['id','code','project_id','creator_id','title','content','body','tags','category','pinned','created_at','updated_at'],
             reference: ['id','code','project_id','creator_id','title','content','body','tags','reference_type','summary','source_link','created_at','updated_at'],
             lore: ['id','code','project_id','creator_id','title','content','body','summary','tags','lore_kind','entry1name','entry1content','entry2name','entry2content','entry3name','entry3content','entry4name','entry4content','created_at','updated_at'],
             relationshipweb: ['id','code','title','created_at','updated_at','description','nodes','links']
           };
 
+
           const allow = allowedByType[type] || allowedByType.chapter;
           const out = {};
 
           // Copy allowed keys from raw when present
-          for (const k of allow) {
-            if (Object.prototype.hasOwnProperty.call(raw, k)) out[k] = raw[k];
-          }
-
-          // Fill sensible defaults / map UI view fields into allowed keys
-          if (!out.id && view.id !== undefined) out.id = view.id;
-          if (!out.code && view.code !== undefined) out.code = view.code;
-          if (!out.title && view.title !== undefined) out.title = view.title;
-          // Preserve the original key used by the file for the main text field.
-          // Priority: if raw used 'content' keep/update 'content'; else if raw used 'body' keep/update 'body';
-          // otherwise choose a sensible default per type (chapters prefer 'content').
-          const preferredTextKey = (raw && Object.prototype.hasOwnProperty.call(raw,'content')) ? 'content'
-            : (raw && Object.prototype.hasOwnProperty.call(raw,'body')) ? 'body'
-            : (type === 'chapter' ? 'content' : 'body');
-          if (preferredTextKey === 'content') {
-            out.content = (view.body !== undefined) ? view.body : (raw.content !== undefined ? raw.content : (raw.body !== undefined ? raw.body : ''));
-          } else {
-            out.body = (view.body !== undefined) ? view.body : (raw.body !== undefined ? raw.body : (raw.content !== undefined ? raw.content : ''));
-          }
-          if (allow.includes('tags')) out.tags = Array.isArray(view.tags) ? view.tags.slice() : (Array.isArray(raw.tags) ? raw.tags.slice() : []);
-
-          // timestamps
-          out.updated_at = nowISO();
-          if (!out.created_at) out.created_at = view.created_at || raw.created_at || nowISO();
-
-          // type-specific fields mapped from view when present
+          // Always build chapter fields in the correct order and always include summary
           if (type === 'chapter') {
-            if (view.status !== undefined) out.status = view.status;
-            if (view.synopsis !== undefined) {
-              if (Object.prototype.hasOwnProperty.call(raw,'synopsis')) out.synopsis = view.synopsis;
-              else if (Object.prototype.hasOwnProperty.call(raw,'summary')) out.summary = view.synopsis;
-              else out.synopsis = view.synopsis;
+            for (const k of allow) {
+              if (k === 'summary') {
+                // Always include summary, prefer view, then raw, else empty string
+                if (view.summary !== undefined) out.summary = view.summary;
+                else if (raw.summary !== undefined) out.summary = raw.summary;
+                else out.summary = "";
+              } else if (k === 'tags') {
+                if (Array.isArray(view.tags)) out.tags = view.tags.slice();
+                else if (Array.isArray(raw.tags)) out.tags = raw.tags.slice();
+                else out.tags = [];
+              } else if (k === 'content') {
+                // Prefer view.body, then raw.content, then raw.body, else empty string
+                out.content = (view.body !== undefined) ? view.body : (raw.content !== undefined ? raw.content : (raw.body !== undefined ? raw.body : ''));
+              } else if (k === 'synopsis') {
+                if (view.synopsis !== undefined) out.synopsis = view.synopsis;
+                else if (raw.synopsis !== undefined) out.synopsis = raw.synopsis;
+                else out.synopsis = "";
+              } else if (k === 'created_at' || k === 'updated_at') {
+                if (k === 'created_at') {
+                  out.created_at = view.created_at || raw.created_at || nowISO();
+                } else {
+                  out.updated_at = nowISO();
+                }
+              } else if (k === 'word_goal') {
+                if (view.word_goal !== undefined) out.word_goal = view.word_goal;
+                else if (raw.word_goal !== undefined) out.word_goal = raw.word_goal;
+                else out.word_goal = 0;
+              } else {
+                if (view[k] !== undefined) out[k] = view[k];
+                else if (raw[k] !== undefined) out[k] = raw[k];
+              }
             }
-            if (view.word_goal !== undefined) out.word_goal = view.word_goal;
-          } else if (type === 'note') {
-            if (view.category !== undefined) out.category = view.category;
-            if (view.pinned !== undefined) out.pinned = !!view.pinned;
-          } else if (type === 'reference') {
-            if (view.reference_type !== undefined) out.reference_type = view.reference_type;
-            if (view.summary !== undefined) out.summary = view.summary;
-            if (view.source_link !== undefined) out.source_link = view.source_link;
+          } else {
+            for (const k of allow) {
+              if (Object.prototype.hasOwnProperty.call(raw, k)) out[k] = raw[k];
+            }
           }
 
-          // Lore-specific writable fields
-          else if (type === 'lore') {
-            if (view.lore_kind !== undefined) out.lore_kind = view.lore_kind;
-            // map up to four custom paired fields
-            for (let i = 1; i <= 4; i++) {
-              const n = `entry${i}name`;
-              const c = `entry${i}content`;
-              if (view[n] !== undefined) out[n] = view[n];
-              if (view[c] !== undefined) out[c] = view[c];
+          // Always prefer in-memory values for relationshipweb fields
+          if (type === 'relationshipweb') {
+            if (view.id !== undefined) out.id = view.id;
+            if (view.code !== undefined) out.code = view.code;
+            if (view.title !== undefined) out.title = view.title;
+            if (view.description !== undefined) out.description = view.description;
+            if (view.nodes !== undefined) out.nodes = view.nodes;
+            if (view.links !== undefined) out.links = view.links;
+            out.updated_at = nowISO();
+            if (!out.created_at) out.created_at = view.created_at || raw.created_at || nowISO();
+          } else {
+            // Fill sensible defaults / map UI view fields into allowed keys
+            if (!out.id && view.id !== undefined) out.id = view.id;
+            if (!out.code && view.code !== undefined) out.code = view.code;
+            if (!out.title && view.title !== undefined) out.title = view.title;
+            // CHAPTER-SPECIFIC: project_id, creator_id
+            if (type === 'chapter') {
+              if (view.project_id !== undefined) out.project_id = view.project_id;
+              else if (raw.project_id !== undefined) out.project_id = raw.project_id;
+              if (view.creator_id !== undefined) out.creator_id = view.creator_id;
+              else if (raw.creator_id !== undefined) out.creator_id = raw.creator_id;
+            }
+            // Preserve the original key used by the file for the main text field.
+            // Priority: if raw used 'content' keep/update 'content'; else if raw used 'body' keep/update 'body';
+            // otherwise choose a sensible default per type (chapters prefer 'content').
+            const preferredTextKey = (raw && Object.prototype.hasOwnProperty.call(raw,'content')) ? 'content'
+              : (raw && Object.prototype.hasOwnProperty.call(raw,'body')) ? 'body'
+              : (type === 'chapter' ? 'content' : 'body');
+            if (preferredTextKey === 'content') {
+              out.content = (view.body !== undefined) ? view.body : (raw.content !== undefined ? raw.content : (raw.body !== undefined ? raw.body : ''));
+            } else {
+              out.body = (view.body !== undefined) ? view.body : (raw.body !== undefined ? raw.body : (raw.content !== undefined ? raw.content : ''));
+            }
+            if (allow.includes('tags')) out.tags = Array.isArray(view.tags) ? view.tags.slice() : (Array.isArray(raw.tags) ? raw.tags.slice() : []);
+
+            // timestamps
+            out.updated_at = nowISO();
+            if (!out.created_at) out.created_at = view.created_at || raw.created_at || nowISO();
+
+            // type-specific fields mapped from view when present
+            if (type === 'chapter') {
+              if (view.status !== undefined) out.status = view.status;
+              if (view.summary !== undefined) out.summary = view.summary;
+              else if (raw.summary !== undefined) out.summary = raw.summary;
+              if (Array.isArray(view.tags)) out.tags = view.tags.slice();
+              else if (Array.isArray(raw.tags)) out.tags = raw.tags.slice();
+              if (view.word_goal !== undefined) out.word_goal = view.word_goal;
+              else if (raw.word_goal !== undefined) out.word_goal = raw.word_goal;
+              if (view.synopsis !== undefined) out.synopsis = view.synopsis;
+              else if (raw.synopsis !== undefined) out.synopsis = raw.synopsis;
+            } else if (type === 'note') {
+              if (view.category !== undefined) out.category = view.category;
+              if (view.pinned !== undefined) out.pinned = !!view.pinned;
+            } else if (type === 'reference') {
+              if (view.reference_type !== undefined) out.reference_type = view.reference_type;
+              if (view.summary !== undefined) out.summary = view.summary;
+              if (view.source_link !== undefined) out.source_link = view.source_link;
+            }
+
+            // Lore-specific writable fields
+            else if (type === 'lore') {
+              if (view.lore_kind !== undefined) out.lore_kind = view.lore_kind;
+              // map up to four custom paired fields
+              for (let i = 1; i <= 4; i++) {
+                const n = `entry${i}name`;
+                const c = `entry${i}content`;
+                if (view[n] !== undefined) out[n] = view[n];
+                if (view[c] !== undefined) out[c] = view[c];
+              }
             }
           }
 
@@ -4884,9 +5341,6 @@ function saveUIPrefsDebounced() {
       }
       
       // Save timeline data
-      dbg(`workspace:save — About to call saveTimelineData() with ${Object.keys(state.timelineNodes || {}).length} nodes, ${Object.keys(state.timelineLinks || {}).length} links`);
-      saveTimelineData();
-      dbg(`workspace:save — saveTimelineData() completed`);
       
       const t = new Date();
       el.lastSaved && (el.lastSaved.textContent = `Last saved • ${t.toLocaleTimeString()}`);
@@ -5805,7 +6259,13 @@ el.wordGoal?.addEventListener("input", () => {
   // Delete current entry from the editor button
   el.deleteBtn?.addEventListener("click", () => {
     const cur = findEntryByKey(state.selectedId);
-    if (cur) confirmAndDelete(cur.id);
+    dbg(`[editor-delete-btn] Clicked. selectedId=${state.selectedId} cur=${cur ? entryKey(cur) : 'null'}`);
+    if (cur) {
+      dbg(`[editor-delete-btn] Confirming delete for entryKey=${entryKey(cur)} id=${cur.id} type=${cur.type}`);
+      confirmAndDelete(cur.id);
+    } else {
+      dbg(`[editor-delete-btn] No current entry to delete.`);
+    }
   });
 
   // Lore editor buttons
@@ -5953,7 +6413,7 @@ el.wordGoal?.addEventListener("input", () => {
 
       state.workspacePath = ap.activePath || null;
       state.currentProjectDir = ap.currentProjectDir || null;
-      SAVE_FILE = (state.workspacePath && path) ? path.join(state.workspacePath, "data", "project.json") : null;
+      setSaveFileFromWorkspace();
 
       // PROBE (DB prefs): read workspace path from DB and log it
       try {
@@ -5967,14 +6427,7 @@ el.wordGoal?.addEventListener("input", () => {
         dbg(`DB prefs invoke failed: ${String(e)}`);
       }
 
-      // Establish a per-workspace debug log and flush any buffered lines
-      if (state.workspacePath && path) {
-        LOG_FILE = path.join(state.workspacePath, "debug.log");
-        try { if (!fs.existsSync(state.workspacePath)) fs.mkdirSync(state.workspacePath, { recursive: true }); } catch {}
-        if (_dbgBuf.length) {
-          try { fs.appendFileSync(LOG_FILE, _dbgBuf.join("\n") + "\n", "utf8"); _dbgBuf.length = 0; } catch {}
-        }
-      }
+
 
       if (!state.currentProjectDir || !state.workspacePath) {
         ensureProjectPicker(); showProjectPicker();
@@ -6061,3 +6514,4 @@ el.wordGoal?.addEventListener("input", () => {
     } catch (e) { dbg('Failed to install capture-phase sidebar click logger: ' + (e && e.message)); }
 
   })();
+

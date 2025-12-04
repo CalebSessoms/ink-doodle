@@ -1,0 +1,24 @@
+{
+  "id": 2,
+  "code": "LOR-0001-000002",
+  "project_id": 1,
+  "creator_id": 2,
+  "number": null,
+  "title": "Conclave of the Crimson Hand",
+  "content": "Founded after the Great Alchemical Purge (1347). Publicly: guardians of alchemical knowledge. Secretly: controls elemental magic through catalyst monopolization. Inner circle consists of 'Bloodmarked' families with genetic markers for catalyst resonance.",
+  "summary": "The ruling body controlling alchemy's secrets and power",
+  "tags": [
+    "politics", "secrets", "corruption"
+  ],
+  "lore_kind": "Organization",
+  "entry1_name": "founding_motto",
+  "entry1_content": "'Knowledge is Power; Power is Control'",
+  "entry2_name": "test",
+  "entry2_content": "test",
+  "entry3_name": "test",
+  "entry3_content": "test",
+  "entry4_name": "test",
+  "entry4_content": "test",
+  "created_at": "2025-11-07T03:16:10.198Z",
+  "updated_at": "2025-11-14T04:20:44.337Z"
+}

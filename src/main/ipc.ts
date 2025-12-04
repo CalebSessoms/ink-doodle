@@ -296,16 +296,14 @@ ipcMain.handle('debug:getGlobalLogPath', () => {
 });
 
 // Allow renderer to append a debug line to the global/per-project logs.
-ipcMain.handle('debug:append', (_evt, payload) => {
+ipcMain.handle('debug:append', async (_evt, { line }) => {
   try {
-    const line = payload && typeof payload === 'object' ? payload.line : undefined;
-    const projectDir = payload && typeof payload === 'object' ? payload.projectDir : undefined;
-    if (typeof line !== 'string') throw new Error('Invalid debug line');
-    appendDebugLog(line, projectDir || null);
+    console.log('[ipcMain] debug:append called with line:', line);
+    appendDebugLog(line);
     return { ok: true };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: msg };
+    console.warn('[ipcMain] debug:append error:', err && err.message ? err.message : err);
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 });
 

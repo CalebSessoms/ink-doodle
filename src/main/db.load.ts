@@ -226,16 +226,22 @@ export async function fullLoad(options?: { baseDir?: string; persist?: boolean; 
 							// Write lore entries
 							await writeEntries(lp.entries.lore || [], 'lore');
 
-							// Write timeline data as timeline.json in data directory (not individual files)
+							// Write all timeline entries as timeline.json, timeline2.json, etc.
 							if (lp.entries.timelines && lp.entries.timelines.length > 0) {
-								// Use the first timeline for timeline.json (typically there's only one per project)
-								const timeline = lp.entries.timelines[0];
-								const timelineJsonPath = path.join(projectPath, 'data', 'timeline.json');
-								try {
-									await fs.writeFile(timelineJsonPath, JSON.stringify(timeline, null, 2), 'utf8');
-									appendDebugLog(`db.load:fullLoad — wrote timeline data to ${timelineJsonPath}`);
-								} catch (err) {
-									appendDebugLog(`db.load:fullLoad — failed to write timeline ${timelineJsonPath}: ${(err as Error).message}`);
+								for (let i = 0; i < lp.entries.timelines.length; i++) {
+									let timeline = { ...lp.entries.timelines[i] };
+									// Normalize id/code fields
+									timeline.id = i + 1;
+									timeline.code = `TMLPRJ-0001-00000${i+1}`;
+									// First timeline is timeline.json, second is timeline2.json, etc.
+									const timelineFileName = i === 0 ? 'timeline.json' : `timeline${i+1}.json`;
+									const timelineJsonPath = path.join(projectPath, 'data', timelineFileName);
+									try {
+										await fs.writeFile(timelineJsonPath, JSON.stringify(timeline, null, 2), 'utf8');
+										appendDebugLog(`db.load:fullLoad — wrote timeline data to ${timelineJsonPath}`);
+									} catch (err) {
+										appendDebugLog(`db.load:fullLoad — failed to write timeline ${timelineJsonPath}: ${(err as Error).message}`);
+									}
 								}
 							}
 

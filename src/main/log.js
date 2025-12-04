@@ -29,33 +29,11 @@ function getGlobalLogPath() {
 function appendDebugLog(line, projectDir) {
   try {
     const stamp = new Date().toISOString();
-
-    // workspace log
-    try {
-      const ws = getWorkspaceDir();
-      if (ws) {
-        ensureDir(ws);
-        const LOG_FILE = path.join(ws, 'debug.log');
-        fs.appendFileSync(LOG_FILE, `[${stamp}] ${String(line)}\n`, 'utf8');
-      }
-    } catch (e) { /* best-effort */ }
-
-    // per-project log (if provided)
-    try {
-      const projPath = projectDir || null;
-      const projectsRoot = getProjectsRoot();
-      if (projPath && projectsRoot && path.resolve(projPath).startsWith(path.resolve(projectsRoot))) {
-        const PROJ_LOG = path.join(projPath, 'debug.log');
-        try { fs.appendFileSync(PROJ_LOG, `[${stamp}] ${String(line)}\n`, 'utf8'); } catch (e) { /* best-effort */ }
-      }
-    } catch (e) { /* best-effort */ }
-
-    // global app log in repo root
+    // Only write to the global app log in repo root
     try {
       const GLOBAL_LOG = getGlobalLogPath();
       try { fs.appendFileSync(GLOBAL_LOG, `[${stamp}] ${String(line)}\n`, 'utf8'); } catch (e) { /* best-effort */ }
     } catch (e) { /* best-effort */ }
-
   } catch (e) {
     // final best-effort fallback
     try { console.warn('[log] appendDebugLog failed:', e && e.message ? e.message : e); } catch (e2) { }

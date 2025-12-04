@@ -894,13 +894,16 @@ export async function translateDbToLocal(dbPayloadOrPath?: any, options?: { base
       for (let idx = 0; idx < timelinesIn.length; idx++) {
         const t = timelinesIn[idx];
         try {
-          const localId = (() => {
-            const num = Number(t.code ?? null);
-            return Number.isFinite(num) ? num : (t.code ?? null);
-          })();
+          let id = t.id ?? null;
+          let code = t.code ?? null;
+          // If this is the first timeline, force id/code to canonical values
+          if (idx === 0) {
+            id = 1;
+            code = 'TMLPRJ-0001-000001';
+          }
           const mapped = {
-            id: localId,
-            code: t.id ?? null,
+            id,
+            code,
             project_id: localProjectId,
             creator_id: t.creator_id ?? null,
             title: t.title ?? null,
