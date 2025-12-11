@@ -1,210 +1,174 @@
-// Loads the currently selected relationship graph into the canvas
-async function loadSelectedGraphToCanvas() {
-  try {
-    // 1. Get selected timeline code from selectedGraph in project.json
-    let selectedCode = null;
-    try {
-      const projectDir = state.currentProjectDir || state.workspacePath;
-      const fs = window.require ? window.require('fs') : null;
-      const path = window.require ? window.require('path') : null;
-      if (fs && path && projectDir) {
-        const projectJsonPath = path.join(projectDir, 'data', 'project.json');
-        if (fs.existsSync(projectJsonPath)) {
-          const projectData = JSON.parse(fs.readFileSync(projectJsonPath, 'utf8'));
-          if (projectData.selectedGraph) {
-            selectedCode = projectData.selectedGraph;
-          }
-        }
-      }
-    } catch (e) { dbg('loadSelectedGraphToCanvas: failed to read selectedGraph from project.json: ' + (e && e.message)); }
-    if (!selectedCode) {
-      selectedCode = state.selectedTimelineCode || (state.timeline && state.timeline.code);
-    }
-    if (!selectedCode) {
-      dbg('loadSelectedGraphToCanvas: No selected timeline code');
-      return;
-    }
-    // 2. Find timeline file for selected code
-    const projectDir = state.currentProjectDir || state.workspacePath;
-    const fs = window.require ? window.require('fs') : null;
-    const path = window.require ? window.require('path') : null;
-    if (!fs || !path || !projectDir) {
-      dbg('loadSelectedGraphToCanvas: missing fs, path, or projectDir');
-      return;
-    }
-    // Scan for timeline*.json files and match code
-    const dataDir = path.join(projectDir, 'data');
-    const files = fs.readdirSync(dataDir).filter(f => f.startsWith('timeline') && f.endsWith('.json'));
-    let timelineFile = null;
+dbg('[TOP-OF-FILE] app.js is being parsed and executed');
+// Create a new timeline file in the given data directory, using the correct naming and structure.
+// This function can be used anywhere in the app to add a new timeline file, not just on project creation.
+function createNewTimelineFile(dataDir, projectId) {
+  // Find all timeline*.json files
+  let used = new Set();
+  let maxIndex = 0;
+  if (fs.existsSync(dataDir)) {
+    const files = fs.readdirSync(dataDir);
     for (const f of files) {
-      const filePath = path.join(dataDir, f);
-      try {
-        const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-        if (data.code === selectedCode) {
-          timelineFile = filePath;
-          break;
-        }
-      } catch (e) { continue; }
-    }
-    if (!timelineFile) {
-      dbg('loadSelectedGraphToCanvas: Timeline file not found for code ' + selectedCode);
-      return;
-    }
-    // 3. Load timeline data
-    const timelineData = JSON.parse(fs.readFileSync(timelineFile, 'utf8'));
-    // 4. Render graph into canvas (replace with your render logic)
-    if (typeof renderRelationshipGraph === 'function') {
-      renderRelationshipGraph(timelineData);
-      dbg('loadSelectedGraphToCanvas: Graph rendered for code ' + selectedCode);
-    } else {
-      dbg('loadSelectedGraphToCanvas: renderRelationshipGraph function not found');
-    }
-  } catch (err) {
-    dbg('loadSelectedGraphToCanvas: error ' + (err && err.message));
-  }
-}
-// Updates all timeline visuals by reading project.json, counting timelines, and updating the timeline bar
-async function updateAllTimelineVisuals() {
-  try {
-    // Find project.json (assume current project directory is available as state.currentProjectDir)
-    const fs = window.require ? window.require('fs') : null;
-    const path = window.require ? window.require('path') : null;
-    const projectDir = state.currentProjectDir || state.workspacePath;
-    if (!fs || !path || !projectDir) {
-      dbg('updateAllTimelineVisuals: missing fs, path, or projectDir');
-      return;
-    }
-    const projectJsonPath = path.join(projectDir, 'data', 'project.json');
-    if (!fs.existsSync(projectJsonPath)) {
-      dbg('updateAllTimelineVisuals: project.json not found');
-      return;
-    }
-    const projectData = JSON.parse(fs.readFileSync(projectJsonPath, 'utf8'));
-    const timelineEntries = (projectData.entries || []).filter(e => e.type === 'timeline');
-    dbg(`updateAllTimelineVisuals: found ${timelineEntries.length} timelines in project.json`);
-    // Sync state.timelines with project.json timelines
-    state.timelines = timelineEntries.map((e, idx) => ({
-      id: idx + 1,
-      code: e.code,
-      title: e.title || `Timeline ${idx + 1}`
-    }));
-    // Update the timeline selector UI inside the timeline bar
-    const bar = document.getElementById('timeline-bottom-bar');
-    if (!bar) {
-      dbg('updateAllTimelineVisuals: timeline bar element not found');
-      return;
-    }
-    const selector = bar.querySelector('#timeline-selector');
-    if (!selector) {
-      dbg('updateAllTimelineVisuals: timeline selector element not found');
-      return;
-    }
-    selector.innerHTML = '';
-    dbg(`updateAllTimelineVisuals: selector cleared, timelines count=${state.timelines.length}`);
-    for (const t of state.timelines) {
-      dbg(`updateAllTimelineVisuals: rendering selector button for code=${t.code}`);
-      const btn = document.createElement('button');
-      btn.className = 'timeline-selector-btn';
-      btn.textContent = t.title || t.code;
-      btn.dataset.code = t.code;
-      if (state.selectedTimelineCode === t.code) {
-        btn.classList.add('selected');
+      const m = f.match(/^timeline(\d*)\.json$/);
+      if (m) {
+        const idx = m[1] ? parseInt(m[1], 10) : 1;
+        used.add(idx);
+        if (idx > maxIndex) maxIndex = idx;
       }
-      btn.title = 'Select relationship web';
-      btn.onclick = () => selectTimeline(t.code);
-      selector.appendChild(btn);
     }
-    dbg('updateAllTimelineVisuals: timeline selector updated');
-  } catch (err) {
-    dbg('updateAllTimelineVisuals: error ' + (err && err.message));
-  }
-}
-// Timeline delete logic matching chapter delete pattern
-function confirmAndDeleteTimeline(code) {
-  if (!code) return;
-  dbg(`[confirmAndDeleteTimeline] Proceeding to delete timeline code=${code}`);
-  deleteTimeline(code);
+// ...existing code...
+  // Find the lowest available index (fill gaps)
+  let nextIndex = 1;
+  while (used.has(nextIndex)) nextIndex++;
+  // Compute id and code
+  const id = nextIndex;
+  const projectStr = String(projectId || 1).padStart(4, '0');
+  const code = `TMLPRJ-${projectStr}-${String(id).padStart(6, '0')}`;
+  // Compute filename
 }
 
-function deleteTimeline(code) {
-  dbg(`[deleteTimeline] requested: ${code}`);
-  if (!state.timelines) {
-    dbg('[deleteTimeline] No timelines in state');
-    return;
+// ───────────────── Create ─────────────────
+function createEntry(type, seq, order_index, opts = {}) {
+  dbg(`[createEntry] called with type=${type}, seq=${seq}, order_index=${order_index}, opts=${JSON.stringify(opts)}, WORKSPACE_DIR=${WORKSPACE_DIR}`);
+  const entry = {
+    type: type,
+    title: type === "chapter" ? `Chapter ${seq}` :
+      type === "note" ? `Note ${seq}` :
+      type === "lore" ? defaultUntitled('lore') :
+      `Reference ${seq}`,
+    updated_at: nowISO(),
+    created_at: nowISO(),
+    order_index: order_index,
+    body: "",
+    tags: [],
+  };
+  // Add type-specific fields
+  if (type === "chapter") {
+    entry.status = "Draft";
+    entry.synopsis = ""; 
+    entry.word_goal = 0;
+    // Add any other chapter-specific fields
+    dbg(`chapter:create — Creating new chapter "${entry.title}" with ID ${entry.id}`);
   }
-  const timeline = state.timelines.find(t => t.code === code);
-  if (!timeline) {
-    dbg(`[deleteTimeline] Timeline not found for code=${code}`);
-    return;
+  else if (type === "note") {
+    entry.category = "Misc";
+    entry.pinned = false;
+    dbg(`note:create — Creating new note "${entry.title}" with ID ${entry.id}`);
   }
-  // Remove from state.timelines
-  state.timelines = state.timelines.filter(t => t.code !== code);
-  dbg(`[deleteTimeline] Removed from state.timelines. Remaining: ${state.timelines.map(t => t.code)}`);
-  // Remove from state.entries if present
-  if (state.entries) {
-    const before = state.entries.length;
-    state.entries = state.entries.filter(e => e.code !== code);
-    dbg(`[deleteTimeline] Removed from state.entries. Before: ${before}, After: ${state.entries.length}`);
+  else if (type === "reference") {
+    entry.reference_type = "General";
+    entry.source_link = "";
+    dbg(`reference:create — Creating new reference "${entry.title}" with ID ${entry.id}`);
   }
-  // Delete the timeline file
-  const file = getTimelineFileNameByIndex(timeline.id || 1);
-  if (fs.existsSync(file)) {
-    try {
-      fs.unlinkSync(file);
-      dbg(`[deleteTimeline] Deleted file: ${file}`);
-    } catch (e) {
-      dbg(`[deleteTimeline] Error deleting file: ${e && e.message}`);
+  else if (type === "lore") {
+    // Unified lore entries: freeform subtype stored in `lore_kind`
+    entry.lore_kind = opts.lore_kind || '';
+    entry.summary = "";
+    entry.body = "";
+    entry.tags = [];
+    // Initialize four custom paired fields (name + content)
+    entry.entry1name = '';
+    entry.entry1content = '';
+    entry.entry2name = '';
+    entry.entry2content = '';
+    entry.entry3name = '';
+    entry.entry3content = '';
+    entry.entry4name = '';
+    entry.entry4content = '';
+    dbg(`lore:create — Creating new lore entry "${entry.title}" with ID ${entry.id}`);
+  }
+
+
+  // Add to state.entries with proper project code if available
+  entry.project_code = state.project?.code;
+  state.entries.push(entry);
+
+  // Immediately write the new entry to disk in the correct folder
+  try {
+    dbg(`[createEntry] attempting disk write for type=${type}`);
+    let entryDir = null;
+    let entryPrefix = null;
+    if (type === "chapter") {
+      entryDir = path.join(WORKSPACE_DIR, "chapters");
+      entryPrefix = "CHP";
+    } else if (type === "note") {
+      entryDir = path.join(WORKSPACE_DIR, "notes");
+      entryPrefix = "NT";
+    } else if (type === "reference") {
+      entryDir = path.join(WORKSPACE_DIR, "refs");
+      entryPrefix = "RF";
     }
-  } else {
-    dbg(`[deleteTimeline] Timeline file does not exist: ${file}`);
-  }
-  // If the deleted timeline was selected, select another or clear
-  if (state.selectedTimelineCode === code) {
-    if (state.timelines.length > 0) {
-      state.selectedTimelineCode = state.timelines[0].code;
-      selectTimeline(state.selectedTimelineCode);
-      dbg(`[deleteTimeline] Selected next timeline: ${state.selectedTimelineCode}`);
+    dbg(`[createEntry] entryDir=${entryDir}, entryPrefix=${entryPrefix}`);
+    if (entryDir && entryPrefix) {
+      if (!fs.existsSync(entryDir)) {
+        dbg(`[createEntry] entryDir does not exist, creating: ${entryDir}`);
+        fs.mkdirSync(entryDir, { recursive: true });
+      }
+      // Generate a unique file name (ID is not always set yet, so use counters)
+      const projectId = state.project?.id || 1;
+      const seqNum = String(state.counters[type] || 1).padStart(6, '0');
+      const projectStr = String(projectId).padStart(4, '0');
+      const fileName = `${entryPrefix}-${projectStr}-${seqNum}.json`;
+      const filePath = path.join(entryDir, fileName);
+      dbg(`[createEntry] writing file: ${filePath}`);
+      fs.writeFileSync(filePath, JSON.stringify(entry, null, 2), 'utf8');
+      dbg(`[createEntry] wrote new ${type} to disk: ${filePath}`);
     } else {
-      state.selectedTimelineCode = null;
-      state.timeline = null;
-      state.timelineNodes = {};
-      state.timelineLinks = {};
-      dbg('[deleteTimeline] No timelines left, cleared selection and state');
-      if (typeof updateTimelineSelector === 'function') updateTimelineSelector();
-      if (typeof clearTimelineRenderer === 'function') clearTimelineRenderer();
+      dbg(`[createEntry] entryDir or entryPrefix missing for type=${type}`);
     }
-  } else {
-    if (typeof updateTimelineSelector === 'function') updateTimelineSelector();
-    if (state.timeline && state.timeline.code === code && typeof clearTimelineRenderer === 'function') {
-      clearTimelineRenderer();
+  } catch (e) {
+    dbg(`[createEntry] failed to write new ${type} to disk: ${e && e.stack ? e.stack : e && e.message ? e.message : e}`);
+  }
+
+  // Switch to correct tab if needed
+  const target = typeTabMap[entry.type];
+  if (state.activeTab !== target) {
+    dbg(`Tab switch needed for new ${entry.type}: ${state.activeTab} -> ${target}`);
+    switchTab(target);
+  }
+
+  // Update state and select the new entry
+  state.selectedId = entryKey(entry);
+
+  // Normalize order indices after adding the new entry
+  normalizeOrderIndexes();
+
+  // Update UI
+  renderList();
+  populateEditor(entry);
+
+  // Focus the title input after a short delay to ensure the editor is ready
+  setTimeout(() => {
+    if (type === 'lore' && el.loreTitle) {
+      try { el.loreTitle.focus(); el.loreTitle.select(); } catch (e) {}
+    } else if (el.titleInput) {
+      try { el.titleInput.focus(); el.titleInput.select(); } catch (e) {}
     }
-  }
-  // Force a custom event to notify any listeners/UI components
-  if (typeof window !== 'undefined') {
-    const evt = new CustomEvent('timelines-updated', { detail: { timelines: state.timelines } });
-    window.dispatchEvent(evt);
-    dbg('[deleteTimeline] Dispatched timelines-updated event');
-  }
-  dbg(`[deleteTimeline] Deleted timeline: code=${code}, title="${timeline.title || ''}"`);
+  }, 50);
+
+  // Save changes - ensure newly created entries are marked dirty immediately
+  try {
+    // touchSave normally marks dirty and schedules autosave; be explicit here
+    state.dirty = true;
+    markDirty();
+    scheduleAutosave();
+  } catch (e) { /* best-effort */ }
+  dbg(`created ${type} "${entry.title}" (ID: ${entry.id}) and selected it - pending save`);
 }
-// New robust timeline select function, matching chapter select pattern
-function selectTimeline(code) {
-  dbg(`selectTimeline -> requested: ${String(code)}`);
-  if (!state.timelines) {
-    dbg('selectTimeline -> no timelines in state');
-    return;
-  }
+
+// Expose createEntry on window so UI handlers can always call it
+if (typeof window !== "undefined") {
+  window.createEntry = createEntry;
+}
+
   // Save the current timeline's state before switching
   if (state.timeline && state.timeline.code) {
     try {
-      const path = window.require ? window.require('path') : null;
-      const fs = window.require ? window.require('fs') : null;
-      const workspaceDir = state.workspacePath;
-      if (fs && path && workspaceDir) {
+      // Use top-level fs and path
+      if (fs && path && WORKSPACE_DIR) {
         // Find the file for the current timeline
-        const timelineFiles = fs.readdirSync(path.join(workspaceDir, 'data')).filter(f => f.startsWith('timeline') && f.endsWith('.json'));
+        const timelineFiles = fs.readdirSync(path.join(WORKSPACE_DIR, 'data')).filter(f => f.startsWith('timeline') && f.endsWith('.json'));
         for (const f of timelineFiles) {
-          const filePath = path.join(workspaceDir, 'data', f);
+          const filePath = path.join(WORKSPACE_DIR, 'data', f);
           try {
             const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
             if (data.code === state.timeline.code) {
@@ -227,38 +191,33 @@ function selectTimeline(code) {
     state.selectedTimelineCode = timeline.code;
     // Update selectedGraph in project.json
     try {
-      const fs = window.require ? window.require('fs') : null;
-      const path = window.require ? window.require('path') : null;
-      const workspaceDir = state.workspacePath;
-      if (fs && path && workspaceDir) {
-        const projectJsonPath = path.join(workspaceDir, 'data', 'project.json');
-        dbg(`[selectTimeline] Attempting to update selectedGraph in WORKSPACE: ${projectJsonPath} to value: ${timeline.code}`);
-        if (fs.existsSync(projectJsonPath)) {
-          const projectData = JSON.parse(fs.readFileSync(projectJsonPath, 'utf8'));
+      // Use top-level fs and path
+      if (fs && path && SAVE_FILE) {
+        dbg(`[selectTimeline] Attempting to update selectedGraph in WORKSPACE: ${SAVE_FILE} to value: ${timeline.code}`);
+        if (fs.existsSync(SAVE_FILE)) {
+          const projectData = JSON.parse(fs.readFileSync(SAVE_FILE, 'utf8'));
           if (projectData.selectedGraph !== timeline.code) {
             projectData.selectedGraph = timeline.code;
-            fs.writeFileSync(projectJsonPath, JSON.stringify(projectData, null, 2), 'utf8');
-            dbg(`[selectTimeline] Successfully updated selectedGraph in WORKSPACE ${projectJsonPath} to: ${timeline.code}`);
+            fs.writeFileSync(SAVE_FILE, JSON.stringify(projectData, null, 2), 'utf8');
+            dbg(`[selectTimeline] Successfully updated selectedGraph in WORKSPACE ${SAVE_FILE} to: ${timeline.code}`);
           } else {
-            dbg(`[selectTimeline] selectedGraph already set to ${timeline.code} in WORKSPACE ${projectJsonPath}`);
+            dbg(`[selectTimeline] selectedGraph already set to ${timeline.code} in WORKSPACE ${SAVE_FILE}`);
           }
         } else {
-          dbg(`[selectTimeline] project.json does not exist at: ${projectJsonPath}`);
+          dbg(`[selectTimeline] project.json does not exist at: ${SAVE_FILE}`);
         }
       } else {
-        dbg('[selectTimeline] fs, path, or workspaceDir missing');
+        dbg('[selectTimeline] fs, path, or SAVE_FILE missing');
       }
     } catch (e) { dbg('[selectTimeline] failed to update selectedGraph in workspace project.json: ' + (e && e.message)); }
     // Find timeline file by matching code property in timeline*.json files
-    const path = window.require ? window.require('path') : null;
-    const fs = window.require ? window.require('fs') : null;
-    const projectDir = state.currentProjectDir || state.workspacePath;
-    if (!fs || !path || !projectDir) {
-      dbg('selectTimeline: missing fs, path, or projectDir');
+    // Use top-level fs and path
+    if (!fs || !path || !WORKSPACE_DIR) {
+      dbg('selectTimeline: missing fs, path, or WORKSPACE_DIR');
       return;
     }
-    // Always use workspacePath for timeline file lookup
-    const dataDir = path.join(state.workspacePath, 'data');
+    // Always use WORKSPACE_DIR for timeline file lookup
+    const dataDir = path.join(WORKSPACE_DIR, 'data');
     // Extract timeline number from code (e.g., TMLPRJ-0001-000002 => 2)
     let timelineNum = 1;
     const codeMatch = /TMLPRJ-\d+-([0-9]+)/.exec(timeline.code);
@@ -313,16 +272,13 @@ function selectTimeline(code) {
     state.timelineLinks = {};
     // Also update selectedGraph in project.json for unresolved code
     try {
-      const projectDir = state.currentProjectDir || state.workspacePath;
-      const fs = window.require ? window.require('fs') : null;
-      const path = window.require ? window.require('path') : null;
-      if (fs && path && projectDir) {
-        const projectJsonPath = path.join(projectDir, 'data', 'project.json');
-        if (fs.existsSync(projectJsonPath)) {
-          const projectData = JSON.parse(fs.readFileSync(projectJsonPath, 'utf8'));
+      // Use top-level fs and path
+      if (fs && path && SAVE_FILE) {
+        if (fs.existsSync(SAVE_FILE)) {
+          const projectData = JSON.parse(fs.readFileSync(SAVE_FILE, 'utf8'));
           if (projectData.selectedGraph !== code) {
             projectData.selectedGraph = code;
-            fs.writeFileSync(projectJsonPath, JSON.stringify(projectData, null, 2), 'utf8');
+            fs.writeFileSync(SAVE_FILE, JSON.stringify(projectData, null, 2), 'utf8');
             dbg('selectTimeline: updated selectedGraph in project.json (unresolved)');
           }
         }
@@ -334,15 +290,9 @@ function selectTimeline(code) {
     }
   }
 }
-
-
 // Ensure 'fs', 'path', and 'ipcRenderer' are available in all scopes
 let fs, path, ipcRenderer;
-
-// Global debounce handle for autosave
 let autosaveDebounce = null;
-
-// Autosave debounce delay (ms)
 const AUTOSAVE_IDLE_MS = 2000;
 try {
   fs = require('fs');
@@ -357,7 +307,43 @@ try {
   }
 }
 
-// ───────────────── Debug helpers ─────────────────
+// ───────────────── Global/State ─────────────────
+window.state = {
+  projectName: "Untitled Project",
+  activeTab: "chapters", // "chapters" | "notes" | "references"
+  entries: [],           // { id, type, title, ... }
+  selectedId: null,
+  // counters: chapters, notes, references, and unified lore entries
+  counters: { chapter: 1, note: 1, reference: 1, lore: 1 },
+
+  // Logged-in creator info ─────────────
+  authUser: null,  // { id, code, email, name } or null
+
+  // Autosave
+  dirty: false,
+  lastSavedAt: 0,
+
+  // Drag and drop
+  drag: {},
+  // Add any other state properties as needed
+};
+
+// Initialize horizontalLine after DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+  const bar = document.getElementById('timeline-bottom-bar');
+  if (bar) {
+    // .timeline-horizontal-line is set here by selecting the DOM element
+    horizontalLine = bar.querySelector('.timeline-horizontal-line');
+  }
+});
+let horizontalLine = null;
+document.addEventListener('DOMContentLoaded', () => {
+  const bar = document.getElementById('timeline-bottom-bar');
+  if (bar) {
+    // .timeline-horizontal-line is set here by selecting the DOM element
+    horizontalLine = bar.querySelector('.timeline-horizontal-line');
+  }
+});
 function dbg(msg) {
   const stamp = new Date().toISOString();
   const line  = `[${stamp}] ${String(msg)}`;
@@ -371,250 +357,21 @@ function dbg(msg) {
 // ──────────────── Timeline Multi-File Logic ────────────────
 
 
-(() => {
-  // Disable timeline creation button if SAVE_FILE is not set
-  document.addEventListener('DOMContentLoaded', () => {
-    const timelineBtn = document.getElementById('timeline-create-btn');
-    if (timelineBtn) {
-      if (!SAVE_FILE) {
-        timelineBtn.disabled = true;
-        timelineBtn.title = 'Load or create a project first';
-      } else {
-        timelineBtn.disabled = false;
-        timelineBtn.title = '';
-      }
-    }
-    // Force timeline selector refresh on load
-    if (typeof updateTimelineSelector === 'function') {
-      dbg('DOMContentLoaded: calling updateTimelineSelector');
-      updateTimelineSelector();
-    } else {
-      dbg('DOMContentLoaded: updateTimelineSelector not defined');
-    }
-  });
 
-  // Place all timeline-related functions here so they share scope
-  function getTimelineDir() {
-    return TIMELINE_WORKSPACE_DATA;
-  }
-  function getTimelineFileNameByIndex(index) {
-    const base = path.join(getTimelineDir(), 'timeline');
-    return index === 1 ? `${base}.json` : `${base}${index}.json`;
-  }
-  function getNextTimelineIndexAndFile() {
-    const dir = getTimelineDir();
-    let maxIndex = 0;
-    let used = new Set();
-    if (fs && fs.existsSync(dir)) {
-      const files = fs.readdirSync(dir);
-      for (const f of files) {
-        const m = f.match(/^timeline(\d*)\.json$/);
-        if (m) {
-          const idx = m[1] ? parseInt(m[1], 10) : 1;
-          used.add(idx);
-          if (idx > maxIndex) maxIndex = idx;
-        }
-      }
-    }
-    let nextIndex = 1;
-    while (used.has(nextIndex)) nextIndex++;
-    return { index: nextIndex, file: getTimelineFileNameByIndex(nextIndex) };
-  }
-  function getNextTimelineIndex() {
-    const dir = getTimelineDir();
-    let maxIndex = 0;
-    if (fs && fs.existsSync(dir)) {
-      const files = fs.readdirSync(dir);
-      for (const f of files) {
-        const m = f.match(/^timeline(\d*)\.json$/);
-        if (m) {
-          const idx = m[1] ? parseInt(m[1], 10) : 1;
-          if (idx > maxIndex) maxIndex = idx;
-        }
-      }
-    }
-    return maxIndex + 1;
-  }
-  // Removed duplicate selectTimeline. All code should use the main selectTimeline function defined above.
-  function updateTimelineSelector() {
-    dbg('updateTimelineSelector: TOP OF FUNCTION');
-    const selector = document.getElementById('timeline-selector');
-    if (!selector) {
-      dbg('updateTimelineSelector: timeline-selector element not found');
-      return;
-    }
-    selector.innerHTML = '';
-    if (!state.timelines) state.timelines = [];
-    dbg(`updateTimelineSelector: state.timelines.length=${state.timelines.length}`);
-    for (const t of state.timelines) {
-      dbg(`updateTimelineSelector: rendering selector button for code=${t.code}`);
-      const btn = document.createElement('button');
-      btn.className = 'timeline-selector-btn';
-      btn.textContent = t.title || t.code;
-      btn.dataset.code = t.code;
-      if (state.timeline && state.timeline.code === t.code) {
-        btn.classList.add('selected');
-      }
-      btn.title = 'Select relationship web';
-      btn.onclick = () => selectTimeline(t.code);
-      selector.appendChild(btn);
-    }
-    const createBtn = document.getElementById('timeline-create-btn');
-    if (createBtn) {
-      createBtn.onclick = async () => {
-        dbg('Create button clicked (handler entry)');
-        const defaultTitle = `Relationship Web ${state.timelines ? state.timelines.length + 1 : 1}`;
-        dbg('Create button about to call createTimeline');
-        await createTimeline({ title: defaultTitle });
-        dbg('Create button: createTimeline finished with: ' + defaultTitle);
-      };
-    }
-    const deleteBtn = document.getElementById('timeline-delete-btn');
-    if (deleteBtn) {
-      deleteBtn.onclick = () => {
-        if (state.timeline && state.timeline.code) {
-          if (confirm('Delete this relationship web? This cannot be undone.')) {
-            confirmAndDeleteTimeline(state.timeline.code);
-          }
-        }
-      };
-    }
-    const bar = document.getElementById('timeline-bottom-bar');
-    if (!bar) {
-      dbg('updateTimelineSelector: timeline-bottom-bar element not found');
-      return;
-    }
-    bar.querySelectorAll('.timeline-entry-marker').forEach(el => el.remove());
-    const horizontalLine = bar.querySelector('.timeline-horizontal-line');
-    if (!horizontalLine) {
-      dbg('updateTimelineSelector: .timeline-horizontal-line not found');
-      return;
-    }
-    horizontalLine.querySelectorAll('.timeline-entry-marker').forEach(el => el.remove());
-    if (!state.timelines || state.timelines.length === 0) {
-      dbg('updateTimelineSelector: no timelines to display');
-      return;
-    }
-    let lineWidth = horizontalLine.offsetWidth;
-    let lineHeight = horizontalLine.offsetHeight;
-    dbg(`updateTimelineSelector: horizontalLine.offsetWidth=${horizontalLine.offsetWidth}, offsetHeight=${horizontalLine.offsetHeight}`);
-    if (!lineWidth || lineWidth < 10) {
-      lineWidth = 400;
-      dbg('updateTimelineSelector: using fallback lineWidth=400');
-    }
-    if (!lineHeight || lineHeight < 2) {
-      lineHeight = 2;
-      dbg('updateTimelineSelector: using fallback lineHeight=2');
-    }
-    const margin = 24;
-    const usableWidth = Math.max(1, lineWidth - 2 * margin);
-    const n = state.timelines.length;
-    dbg(`updateTimelineSelector: rendering ${n} timeline selector buttons, lineWidth=${lineWidth}, usableWidth=${usableWidth}`);
-    // Only create selector buttons here, no markers or dots
-  }
-})();
-// Assumes timelines are stored as timeline-<code>.json in the same directory as timeline.json
-
-// Use the correct workspace path for timeline and project.json
 // DEBUG: Confirm getTimelineFileName is defined at load
 const TIMELINE_WORKSPACE_DATA = 'c:/Users/caleb/AppData/Roaming/ink-doodle/workspace/data';
 const PROJECT_JSON_PATH = TIMELINE_WORKSPACE_DATA + '/project.json';
 
-function getTimelineDir() {
-  // Use the correct workspace data directory
-  return TIMELINE_WORKSPACE_DATA;
-}
 
-function getTimelineFileNameByIndex(index) {
-  // index 1: timeline.json, index 2: timeline2.json, etc.
-  const base = path.join(getTimelineDir(), 'timeline');
-  return index === 1 ? `${base}.json` : `${base}${index}.json`;
-}
 
-function getNextTimelineIndexAndFile() {
-  // Scan the data directory for timeline*.json files and return the next available index and filename
-  const dir = getTimelineDir();
-  let maxIndex = 0;
-  let used = new Set();
-  if (fs && fs.existsSync(dir)) {
-    const files = fs.readdirSync(dir);
-    for (const f of files) {
-      const m = f.match(/^timeline(\d*)\.json$/);
-      if (m) {
-        const idx = m[1] ? parseInt(m[1], 10) : 1;
-        used.add(idx);
-        if (idx > maxIndex) maxIndex = idx;
-      }
-    }
-  }
-  // Find the lowest available index (fill gaps)
-  let nextIndex = 1;
-  while (used.has(nextIndex)) nextIndex++;
-  return { index: nextIndex, file: getTimelineFileNameByIndex(nextIndex) };
-}
 
-function getNextTimelineIndex() {
-  // Scan the data directory for timeline*.json files and return the next available index
-  const dir = getTimelineDir();
-  let maxIndex = 0;
-  if (fs && fs.existsSync(dir)) {
-    const files = fs.readdirSync(dir);
-    for (const f of files) {
-      const m = f.match(/^timeline(\d*)\.json$/);
-      if (m) {
-        const idx = m[1] ? parseInt(m[1], 10) : 1;
-        if (idx > maxIndex) maxIndex = idx;
-      }
-    }
-  }
-  return maxIndex + 1;
-}
-
-// ───────────────── Autosave engine ─────────────────
-function markDirty() {
-  state.dirty = true;
-  if (typeof el !== 'undefined' && el && el.saveState) {
-    el.saveState.textContent = "Unsaved (autosave) …";
-  }
-}
-function scheduleAutosave() {
-  clearTimeout(autosaveDebounce);
-  autosaveDebounce = setTimeout(() => {
-    if (state.dirty) saveToDisk();
-  }, AUTOSAVE_IDLE_MS);
-}
-
-async function createTimeline({ title, description }) {
-    // 1. Call selectTimeline with the selectedGraph code from project.json
-    const fs = window.require ? window.require('fs') : null;
-    const path = window.require ? window.require('path') : null;
-    const workspaceDir = state.workspacePath;
-    if (fs && path && workspaceDir) {
-      const projectJsonPath = path.join(workspaceDir, 'data', 'project.json');
-      if (fs.existsSync(projectJsonPath)) {
-        try {
-          const projectData = JSON.parse(fs.readFileSync(projectJsonPath, 'utf8'));
-          let selectedCode = null;
-          if (projectData.selectedGraph) {
-            selectedCode = projectData.selectedGraph;
-          } else if (Array.isArray(projectData.entries) && projectData.entries.length > 0) {
-            selectedCode = projectData.entries[0].code;
-          }
-          if (selectedCode && typeof selectTimeline === 'function') {
-            selectTimeline(selectedCode);
-          }
-        } catch (e) {
-          dbg('createTimeline: failed to call selectTimeline: ' + (e && e.message));
-        }
-      }
-    }
-}
 
 
 // src/renderer/app.js
 // Project Picker + Workspace I/O + Drag-and-Drop Reorder + Delete + Menu integration + Autosave
 /* eslint-disable @typescript-eslint/no-var-requires */
 
+// <<<--- POSSIBLE UNMATCHED OPENING PARENTHESIS (IIFE START)
 (() => {
   "use strict";
 
@@ -622,6 +379,47 @@ async function createTimeline({ title, description }) {
 const fs = require('fs');
 const path = require('path');
 const { ipcRenderer } = require('electron');
+
+// ───────────────── Workspace & Project Paths (Startup Init) ─────────────────
+
+// These are CONSTANT for the lifetime of the app session
+let PROJECTS_DIR = null;
+let WORKSPACE_DIR = null;
+let SAVE_FILE = null;
+
+try {
+  // paths.txt format:
+  // line 1 = Projects directory
+  // line 2 = Workspace directory
+  // NOTE: paths.txt lives in the project root:
+  //  C:\Users\caleb\Desktop\ink-doodle\paths.txt
+  const configPath = "C:\\Users\\caleb\\Desktop\\ink-doodle\\paths.txt";
+
+  if (fs.existsSync(configPath)) {
+    const lines = fs.readFileSync(configPath, "utf8").split(/\r?\n/);
+
+    PROJECTS_DIR = lines[0]?.trim() || null;
+    WORKSPACE_DIR = lines[1]?.trim() || null;
+
+    if (WORKSPACE_DIR) {
+      SAVE_FILE = path.join(WORKSPACE_DIR, "data", "project.json");
+    }
+
+    dbg("Projects Dir: " + PROJECTS_DIR);
+    dbg("Workspace Dir: " + WORKSPACE_DIR);
+    dbg("SAVE_FILE: " + SAVE_FILE);
+  } else {
+    dbg("paths.txt not found at: " + configPath);
+  }
+} catch (e) {
+  dbg("Failed to load workspace paths: " + (e?.message || e));
+}
+
+// Make SAVE_FILE globally visible for legacy code
+window.SAVE_FILE = SAVE_FILE;
+window.WORKSPACE_DIR = WORKSPACE_DIR;
+window.PROJECTS_DIR = PROJECTS_DIR;
+
 
 // DEV: verification marker — helps confirm which app.js the renderer actually loaded.
 // This prints a distinct tag to the console and into the debug logger (if wired).
@@ -716,8 +514,9 @@ function dbg(msg) {
     authUser: null,  // { id, code, email, name } or null
 
     // Project system
-    workspacePath: null,       // <userData>/workspace
-    currentProjectDir: null,   // Documents/InkDoodleProjects/<ProjectName>
+    // workspacePath and currentProjectDir are now replaced by WORKSPACE_DIR and PROJECTS_DIR constants for disk operations
+    // workspacePath: null,       // <userData>/workspace
+    // currentProjectDir: null,   // Documents/InkDoodleProjects/<ProjectName>
 
     // Autosave
     dirty: false,
@@ -743,15 +542,7 @@ function dbg(msg) {
   };
 
   // Will be set after we know workspacePath:
-  let SAVE_FILE = null; // <workspace>/data/project.json
 
-  function setSaveFileFromWorkspace() {
-    if (state.workspacePath && path) {
-      SAVE_FILE = path.join(state.workspacePath, "data", "project.json");
-    } else {
-      SAVE_FILE = null;
-    }
-  }
 
   // ───────────── Finder Modal ─────────────
   let finderEl = null;
@@ -1723,12 +1514,73 @@ function dbg(msg) {
   }
 
   // ─────────────── Timeline Save/Load ───────────────
-// Deduplicated: keep only this definition of saveTimelineData
-  
+  // Deduplicated: keep only this definition of saveTimelineData
+  function saveTimelineData() {
+    if (!fs || !path || !SAVE_FILE) {
+      dbg('timeline: saveTimelineData skipped (missing fs/path/SAVE_FILE)');
+      return;
+    }
 
-// --- Relationship Web Selector and Marker UI ---
-function updateTimelineSelector() {
-  dbg('updateTimelineSelector: TOP OF FUNCTION');
+    try {
+      const dataDir = path.dirname(SAVE_FILE); // .../workspace/data
+      const timelineFile = path.join(dataDir, 'timeline.json');
+
+      // Build nodes payload: map nodeId -> { entryCode, x, y, color, handles }
+      const nodesOut = {};
+      for (const [nodeId, node] of Object.entries(state.timelineNodes || {})) {
+        if (!node) continue;
+
+        // Try to resolve a real entry so we can store its code
+        const entry = findEntryByKey(node.entryId);
+        const entryCode =
+          (entry && entry.code) ? entry.code :
+          (typeof node.entryId === 'string' ? node.entryId : null);
+
+        nodesOut[nodeId] = {
+          entryCode,
+          x: node.x ?? 0,
+          y: node.y ?? 0,
+          color: node.color || null,
+          handles: node.handles || []
+        };
+      }
+
+      // Build links payload: mostly a direct copy
+      const linksOut = {};
+      for (const [linkId, link] of Object.entries(state.timelineLinks || {})) {
+        if (!link) continue;
+        linksOut[linkId] = {
+          fromNode: link.fromNode,
+          fromHandle: link.fromHandle,
+          toNode: link.toNode,
+          toHandle: link.toHandle,
+          cpOffset: link.cpOffset || { x: 0, y: 0 }
+        };
+      }
+
+      const meta = state.timeline || {};
+      const payload = {
+        id:          meta.id || null,
+        code:        meta.code || null,
+        title:       meta.title || '',
+        description: meta.description || '',
+        nodes: nodesOut,
+        links: linksOut
+      };
+
+      fs.writeFileSync(timelineFile, JSON.stringify(payload, null, 2), 'utf8');
+      dbg(
+        `timeline: saveTimelineData wrote ${Object.keys(nodesOut).length}` +
+        ` nodes and ${Object.keys(linksOut).length} links to ${timelineFile}`
+      );
+    } catch (e) {
+      dbg('timeline: saveTimelineData failed: ' + (e && e.message));
+    }
+  }
+
+  // --- Relationship Web Selector and Marker UI ---
+  function updateTimelineSelector() {
+    dbg('updateTimelineSelector: TOP OF FUNCTION');
   dbg(`updateTimelineSelector: state.timelines = ${JSON.stringify(state.timelines)}`);
   // Relationship web selector UI
   const selector = document.getElementById('timeline-selector');
@@ -1841,7 +1693,7 @@ function updateTimelineSelector() {
   bar.querySelectorAll('.timeline-entry-marker').forEach(el => el.remove());
 
   // Place all markers for all timelines
-  const horizontalLine = bar.querySelector('.timeline-horizontal-line');
+  // horizontalLine is now initialized globally after DOMContentLoaded
   if (!horizontalLine) {
     dbg('updateTimelineSelector: .timeline-horizontal-line not found');
     return;
@@ -3205,7 +3057,10 @@ function updateTimelineSelector() {
   const nowISO = () => new Date().toISOString();
   const uid = () => Math.random().toString(36).slice(2, 10);
   const capFirst = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
+
+  // Map top-level tabs → entry type and on-disk directory
   const tabTypeMap = { chapters: "chapter", notes: "note", references: "reference" };
+  const tabDirMap  = { chapters: "chapters", notes: "notes", references: "refs" };
   const typeTabMap = { chapter: "chapters", note: "notes", reference: "references", lore: "lore" };
 
   // Map lore subtabs -> entry types (future entries should use these types)
@@ -3253,21 +3108,71 @@ function updateTimelineSelector() {
   return label;
   }
 
+  function defaultUntitled(type) {
+    const count = state.entries.filter(e => e.type === type).length;
+    const nextNum = count + 1;
+    const label =
+      type === "chapter"   ? `Untitled Chapter ${nextNum}` :
+      type === "note"      ? `Untitled Note ${nextNum}` :
+      type === "reference" ? `Untitled Reference ${nextNum}` :
+      type === "lore"      ? `Untitled Lore ${nextNum}` :
+                             `Untitled Entry ${nextNum}`;
+    return label;
+  }
+
   function visibleEntries() {
     dbg(`visibleEntries -> activeTab=${state.activeTab}`);
-    // Treat timeline as a view of lore entries (sidebar should show lore when timeline active)
-    if (state.activeTab === 'lore' || state.activeTab === 'timeline') {
-      // Show all unified lore entries
-      const list = state.entries
-        .filter(e => e.type === 'lore')
-        .sort((a,b)=>a.order_index - b.order_index);
-      dbg(`visibleEntries -> filtering lore (unified) matched=${list.length}`);
-      return list;
+    const fs = require("fs");
+    const path = require("path");
+    const workspaceDir = WORKSPACE_DIR;
+    if (!workspaceDir) {
+      dbg("visibleEntries -> no workspace path; returning []");
+      return [];
     }
-    const t = tabTypeMap[state.activeTab];
-    const list = state.entries.filter(e => e.type === t).sort((a,b)=>a.order_index - b.order_index);
-    dbg(`visibleEntries -> filtering story type=${t} matched=${list.length}`);
-    return list;
+
+    const tab = state.activeTab;
+    let dirName, type;
+
+    if (tab === "lore" || tab === "timeline") {
+      // timeline reuses lore entries stored under /lore
+      dirName = "lore";
+      type = "lore";
+    } else {
+      // directory name (folders on disk)
+      //   chapters → "chapters"
+      //   notes    → "notes"
+      //   references → "references"
+      // type name (entry.type)
+      //   chapters → "chapter"
+      //   notes    → "note"
+      //   references → "reference"
+      dirName = (typeof tabDirMap !== "undefined" && tabDirMap[tab]) ? tabDirMap[tab] : tab;
+      type    = (typeof tabTypeMap !== "undefined" && tabTypeMap[tab]) ? tabTypeMap[tab] : tab;
+    }
+
+    const dir = path.join(workspaceDir, dirName);
+    let entries = [];
+
+    try {
+      if (fs.existsSync(dir)) {
+        const files = fs.readdirSync(dir).filter(f => f.endsWith(".json"));
+        for (const file of files) {
+          try {
+            const entry = JSON.parse(fs.readFileSync(path.join(dir, file), "utf8"));
+            entry.type = type;
+            entries.push(entry);
+          } catch (e) {
+            dbg(`visibleEntries: failed to read/parse ${file}: ${e?.message || e}`);
+          }
+        }
+      }
+    } catch (e) {
+      dbg(`visibleEntries: failed to list directory ${dir}: ${e?.message || e}`);
+    }
+
+    entries.sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
+    dbg(`visibleEntries -> loaded ${entries.length} entries from disk for type=${type}`);
+    return entries;
   }
 
   function metaText(e) {
@@ -3549,15 +3454,19 @@ function saveUIPrefsDebounced() {
       $("#pp-refresh").addEventListener("click", () => refreshProjectList());
       
       $("#pp-saveback").addEventListener("click", async () => {
-        if (!state.workspacePath || !state.currentProjectDir) return alert("No active project to save back.");
+        // Use the constant workspace / projects roots
+        if (!WORKSPACE_DIR || !PROJECTS_DIR) {
+          return alert("No active project to save back.");
+        }
+
         dbg("Saving project back to original directory...");
         try {
           await saveToWorkspaceAndProject();
-          dbg(`Project saved back to: ${state.currentProjectDir}`);
-          alert(`Workspace saved back to:\n${state.currentProjectDir}`);
+          dbg(`Project saved back from workspace: ${WORKSPACE_DIR}`);
+          alert(`Workspace saved back to project directory:\n${PROJECTS_DIR}`);
         } catch (e) {
-          dbg(`Save back failed: ${e?.message || String(e)}`);
-          return alert(`Save Back failed:\n${e?.message || String(e)}`);
+          dbg(`Save Back failed: ${e?.message || String(e)}`);
+          alert(`Save Back failed:\n${e?.message || String(e)}`);
         }
       });
 
@@ -3622,92 +3531,47 @@ function saveUIPrefsDebounced() {
         };
 
         try {
+          dbg('[project-create] Entered project creation logic');
           // Create the project directory
           const createResult = await ipcRenderer.invoke("project:new", { 
             name,
             initialData: initialProjectData 
           });
+          dbg(`[project-create] ipcRenderer.invoke returned: ${JSON.stringify(createResult)}`);
           
           if (!createResult?.ok) {
             throw new Error(createResult?.error || 'Failed to create project');
           }
 
-          // Ensure all required directories exist
-          if (createResult.projectPath) {
-            await ensureDirectoryExists(createResult.projectPath);
-            await ensureDirectoryExists(path.join(createResult.projectPath, 'data'));
-            await ensureDirectoryExists(path.join(createResult.projectPath, 'chapters'));
-            await ensureDirectoryExists(path.join(createResult.projectPath, 'notes'));
-            await ensureDirectoryExists(path.join(createResult.projectPath, 'refs'));
-            
-            // Ensure project.json exists
-            const projectFile = path.join(createResult.projectPath, 'data', 'project.json');
-            if (!fs.existsSync(projectFile)) {
-              fs.writeFileSync(projectFile, JSON.stringify(initialProjectData, null, 2));
-              await new Promise(resolve => setTimeout(resolve, 100)); // Small delay after write
-            }
-          } else {
+
+          // Ensure all required directories exist and create project.json
+          if (!createResult?.dir) {
+            dbg('[project-create] No project path returned from creation, aborting timeline creation.');
             throw new Error('No project path returned from creation');
           }
-
-          // Success - reset form
-          resetForm();
-          dbg(`Created new project "${name}" with structure`);
-
-          // Wait for filesystem to catch up
-          await new Promise(resolve => setTimeout(resolve, 1000));
-
-          // Verify project structure
-          if (!fs.existsSync(createResult.projectPath)) {
-            throw new Error('Project directory was not created');
-          }
-
-          const dataDir = path.join(createResult.projectPath, 'data');
-          if (!fs.existsSync(dataDir)) {
-            fs.mkdirSync(dataDir, { recursive: true });
-          }
-
+          dbg(`[project-create] Ensuring directories for ${createResult.dir}`);
+          await ensureDirectoryExists(createResult.dir);
+          const dataDir = path.join(createResult.dir, 'data');
+          await ensureDirectoryExists(dataDir);
+          ['chapters', 'notes', 'refs'].forEach(async dir => {
+            await ensureDirectoryExists(path.join(createResult.dir, dir));
+          });
+          // Write initial project.json
           const projectFile = path.join(dataDir, 'project.json');
           if (!fs.existsSync(projectFile)) {
-            fs.writeFileSync(projectFile, JSON.stringify(initialProjectData, null, 2));
+            dbg(`[project-create] Writing project.json to ${projectFile}`);
+            fs.writeFileSync(projectFile, JSON.stringify(initialProjectData, null, 2), 'utf8');
+            await new Promise(resolve => setTimeout(resolve, 100)); // Small delay after write
+          } else {
+            dbg(`[project-create] project.json already exists at ${projectFile}`);
           }
-
-          // Create required folders
-          ['chapters', 'notes', 'refs'].forEach(dir => {
-            const dirPath = path.join(createResult.projectPath, dir);
-            if (!fs.existsSync(dirPath)) {
-              fs.mkdirSync(dirPath, { recursive: true });
-            }
-          });
-          
-          if (!createResult?.ok) {
-            throw new Error(createResult?.error || "Failed to create project");
-          }
-
+          // Always create the initial timeline file
+          dbg(`[project-create] About to call createNewTimelineFile with dataDir=${dataDir}, projectId=${initialProjectData?.id || 1}`);
+          createNewTimelineFile(dataDir, initialProjectData?.id || 1);
+          dbg(`[project-create] Finished call to createNewTimelineFile`);
           // Success - reset form
           resetForm();
           dbg(`Created new project "${name}" with structure`);
-
-          // Ensure project directory exists before trying to load
-          if (createResult.projectPath) {
-            try {
-              if (!fs.existsSync(createResult.projectPath)) {
-                fs.mkdirSync(createResult.projectPath, { recursive: true });
-              }
-              const dataDir = path.join(createResult.projectPath, 'data');
-              if (!fs.existsSync(dataDir)) {
-                fs.mkdirSync(dataDir, { recursive: true });
-              }
-              // Write initial project.json
-              fs.writeFileSync(
-                path.join(dataDir, 'project.json'),
-                JSON.stringify(initialProjectData, null, 2),
-                'utf8'
-              );
-            } catch (err) {
-              throw new Error(`Failed to create project directories: ${err.message}`);
-            }
-          }
 
           // Immediately try to load the new project
           const loadResult = await ipcRenderer.invoke("project:load", { 
@@ -3721,7 +3585,7 @@ function saveUIPrefsDebounced() {
           // Update application state with the new project
           state.workspacePath = loadResult.activePath;
           state.currentProjectDir = loadResult.currentProjectDir || createResult.projectPath;
-          setSaveFileFromWorkspace();
+
 
           // Load the project data
           await appLoadFromDisk();
@@ -3925,8 +3789,8 @@ function saveUIPrefsDebounced() {
               throw new Error(`Could not read project data: ${parseError.message}`);
             }
 
-            // Save current project if needed
-            if (state.workspacePath && state.currentProjectDir) {
+            // Save current project if needed (only if a project is actually loaded)
+            if (WORKSPACE_DIR && state.currentProjectDir) {
               dbg(`Saving current project before switch...`);
               
               // First save to workspace
@@ -3936,10 +3800,10 @@ function saveUIPrefsDebounced() {
                 dbg(`Warning: Failed to save workspace: ${saveError.message}`);
               }
               
-              // Then save back to project directory
+              // Then save back to that project's directory
               const sb = await ipcRenderer.invoke("project:saveBack", { 
-                workspacePath: state.workspacePath, 
-                projectDir: state.currentProjectDir 
+                workspacePath: WORKSPACE_DIR, 
+                projectDir: state.currentProjectDir  
               }).catch(e=>({ok:false,error:String(e)}));
               
               if (!sb?.ok) {
@@ -3966,12 +3830,11 @@ function saveUIPrefsDebounced() {
             if (!r?.ok) throw new Error(r?.error || "Unknown error");
 
             // Update state with new project info
-            state.workspacePath = r.activePath;
-            state.currentProjectDir = r.currentProjectDir || item.dir;
-            setSaveFileFromWorkspace();
+            state.currentProjectDir = item.dir;
+
 
             await appLoadFromDisk();
-            try { updateAllTimelineVisuals(); } catch (e) { dbg(`updateAllTimelineVisuals failed: ${e?.message || e}`); }
+            // updateAllTimelineVisuals call removed; using updateTimelineSelector instead
             hideProjectPicker();
             dbg(`Successfully loaded project from ${item.dir}`);
           } catch (error) {
@@ -4065,79 +3928,80 @@ function saveUIPrefsDebounced() {
     li.appendChild(m);
     li.appendChild(spacer);
 
-      // Click-to-select
-      li.addEventListener("click", () => {
-        dbg(`renderList: click -> entryKey=${entryKey(e)} id=${e.id} title="${e.title || ''}"`);
-        selectEntry(entryKey(e));
-      });
-
-      // Drag events
-      li.addEventListener("dragstart", (ev) => {
-        state.drag.draggingId = e.id;
-        li.classList.add("dragging");
-        // Use a stable entry key (prefers code when available) so drop resolution
-        // can unambiguously find the same entry across types (lore, chapter, etc.).
-        try {
-          const payload = entryKey(e);
-          dbg(`renderList: dragstart payload='${String(payload)}' for id=${e.id} type=${e.type}`);
-          ev.dataTransfer.setData("text/plain", payload);
-        } catch (ex) {
-          // Fallback to numeric id if something unexpected happens
-          ev.dataTransfer.setData("text/plain", e.id);
-        }
-        ev.dataTransfer.effectAllowed = "move";
-      });
-
-      li.addEventListener("dragover", (ev) => {
-        const dragging = state.entries.find(x => x.id === state.drag.draggingId);
-        if (!dragging || dragging.type !== e.type) return;
-        ev.preventDefault();
-        const rect = li.getBoundingClientRect();
-        const mid = rect.top + rect.height / 2;
-        const pos = ev.clientY < mid ? "before" : "after";
-        state.drag.overId = e.id;
-        state.drag.overPosition = pos;
-        li.classList.toggle("drag-target-before", pos === "before");
-        li.classList.toggle("drag-target-after", pos === "after");
-      });
-
-      li.addEventListener("dragleave", () => {
-        li.classList.remove("drag-target-before", "drag-target-after");
-      });
-
-      li.addEventListener("drop", (ev) => {
-        ev.preventDefault();
-        const fromId = state.drag.draggingId;
-        const toId = e.id;
-        const pos = state.drag.overPosition || "before";
-        clearDragClasses();
-        if (!fromId || !toId || fromId === toId) { resetDragState(); return; }
-        reorderWithinType(fromId, toId, pos);
-        resetDragState();
-      });
-
-      li.addEventListener("dragend", () => {
-        clearDragClasses();
-        resetDragState();
-      });
-
-      el.entryList.appendChild(li);
+    // Click-to-select
+    li.addEventListener("click", () => {
+      dbg(`renderList: click -> entryKey=${entryKey(e)} id=${e.id} title="${e.title || ''}"`);
+      selectEntry(entryKey(e));
     });
-      // If there are no visible entries, and we're in Lore mode, show a helpful
-      // empty placeholder with a quick +New button for the current lore subtab.
-      if (list.length === 0) {
-        // No entries visible. Clear selection and editor. Do not render an
-        // inline quick-create here — the main +New button is the canonical
-        // place to create entries.
-        state.selectedId = null;
-        clearEditor();
-      } else {
-        if (!state.selectedId && list.length > 0) {
-          state.selectedId = entryKey(list[0]);
-          dbg(`renderList — no selection; defaulting to ${state.selectedId}`);
-          populateEditor(list[0]);
-        }
+
+    // Drag events
+    li.addEventListener("dragstart", (ev) => {
+      state.drag.draggingId = e.id;
+      li.classList.add("dragging");
+      // Use a stable entry key (prefers code when available) so drop resolution
+      // can unambiguously find the same entry across types (lore, chapter, etc.).
+      try {
+        const payload = entryKey(e);
+        dbg(`renderList: dragstart payload='${String(payload)}' for id=${e.id} type=${e.type}`);
+        ev.dataTransfer.setData("text/plain", payload);
+      } catch (ex) {
+        // Fallback to numeric id if something unexpected happens
+        ev.dataTransfer.setData("text/plain", e.id);
       }
+      ev.dataTransfer.effectAllowed = "move";
+    });
+
+    li.addEventListener("dragover", (ev) => {
+      const dragging = state.entries.find(x => x.id === state.drag.draggingId);
+      if (!dragging || dragging.type !== e.type) return;
+      ev.preventDefault();
+      const rect = li.getBoundingClientRect();
+      const mid = rect.top + rect.height / 2;
+      const pos = ev.clientY < mid ? "before" : "after";
+      state.drag.overId = e.id;
+      state.drag.overPosition = pos;
+      li.classList.toggle("drag-target-before", pos === "before");
+      li.classList.toggle("drag-target-after", pos === "after");
+    });
+
+    li.addEventListener("dragleave", () => {
+      li.classList.remove("drag-target-before", "drag-target-after");
+    });
+
+    li.addEventListener("drop", (ev) => {
+      ev.preventDefault();
+      const fromId = state.drag.draggingId;
+      const toId = e.id;
+      const pos = state.drag.overPosition || "before";
+      if (!fromId || !toId || fromId === toId) { resetDragState(); return; }
+      reorderWithinType(fromId, toId, pos);
+      resetDragState();
+      clearDragClasses();
+    });
+
+    li.addEventListener("dragend", () => {
+      clearDragClasses();
+      resetDragState();
+    });
+
+    el.entryList.appendChild(li);
+    });
+
+    // If there are no visible entries, and we're in Lore mode, show a helpful
+    // empty placeholder with a quick +New button for the current lore subtab.
+    if (list.length === 0) {
+      // No entries visible. Clear selection and editor. Do not render an
+      // inline quick-create here — the main +New button is the canonical
+      // place to create entries.
+      state.selectedId = null;
+      clearEditor();
+    } else {
+      if (!state.selectedId && list.length > 0) {
+        state.selectedId = entryKey(list[0]);
+        dbg(`renderList — no selection; defaulting to ${state.selectedId}`);
+        populateEditor(list[0]);
+      }
+    }
     updateWordCount();
   }
 
@@ -4273,14 +4137,34 @@ function saveUIPrefsDebounced() {
   function selectEntry(idOrKey) {
     // idOrKey may be a numeric id or a canonical key (code or type:id)
     dbg(`selectEntry -> requested: ${String(idOrKey)}`);
-    const entry = findEntryByKey(idOrKey) || state.entries.find(e => e.id === idOrKey);
+    const fs = require('fs');
+    const path = require('path');
+    const workspaceDir = WORKSPACE_DIR;
+    let entry = null;
+    // Try to find the entry file by scanning all entry folders
+    const entryTypes = ['chapters', 'notes', 'refs', 'lore'];
+    for (const type of entryTypes) {
+      const dir = path.join(workspaceDir, type);
+      if (!fs.existsSync(dir)) continue;
+      const files = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
+      for (const file of files) {
+        try {
+          const candidate = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
+          if (entryKey(candidate) === idOrKey || candidate.id === idOrKey || String(candidate.id) === String(idOrKey)) {
+            candidate.type = type.slice(0, -1); // e.g., 'chapters' -> 'chapter'
+            entry = candidate;
+            break;
+          }
+        } catch (e) { dbg(`selectEntry: failed to read/parse ${file}: ${e?.message || e}`); }
+      }
+      if (entry) break;
+    }
     if (entry) {
       dbg(`selectEntry -> resolved to entryKey=${entryKey(entry)} id=${entry.id} title="${entry.title || ''}"`);
       state.selectedId = entryKey(entry);
       populateEditor(entry);
     } else {
       dbg(`selectEntry -> no entry resolved for ${String(idOrKey)}; storing raw selectedId`);
-      // Fallback: set raw value (may be resolved later)
       state.selectedId = idOrKey;
     }
     renderList();
@@ -4373,215 +4257,173 @@ function saveUIPrefsDebounced() {
   }
 
   // ───────────────── Create ─────────────────
-  function createEntry(kind, opts) {
-    opts = opts || {};
-    const type = kind;
-    const order_index = state.entries.filter(e => e.type === type).length;
-    
-    // Increment counter for this type first
-    state.counters[type] = (state.counters[type] || 0) + 1;
-    const count = state.counters[type];
-
-    // Determine project id to use as parent in entry codes
-    const projectId = Number(state.project?.id || state.project?.project_id) || 0;
-    const pad = (n) => String(n).padStart(6, '0');
-    const parentPad = String(projectId).padStart(4, '0');
-  const typeCode = type === 'chapter' ? 'CHP' : type === 'note' ? 'NT' : type === 'reference' ? 'RF' :
-           type === 'lore' ? 'LOR' :
-           type === 'character' ? 'CHR' : type === 'location' ? 'LOC' : type === 'timeline' ? 'TML' :
-           type === 'item' ? 'ITM' : 'RF';
-
-    // Use numeric id (sequence) and full code matching main process format
-    const seq = (() => {
-      const sameType = state.entries.filter(e => e.type === type);
-      // If any existing entries have numeric id or code with trailing number, try to find max
-      let max = 0;
-      for (const e of sameType) {
-        if (typeof e.id === 'number') max = Math.max(max, e.id);
-        else if (e.code && typeof e.code === 'string') {
-          const m = e.code.match(/(\d+)$/);
-          if (m) max = Math.max(max, parseInt(m[1], 10));
-        }
+  function deleteEntry(idOrKey) {
+    const fs = require('fs');
+    const path = require('path');
+    const workspaceDir = WORKSPACE_DIR;
+    const targetKey = String(idOrKey);
+    let entry = null, entryFile = null, entryType = null;
+    const entryTypes = ['chapters', 'notes', 'refs', 'lore'];
+    for (const type of entryTypes) {
+      const dir = path.join(workspaceDir, type);
+      if (!fs.existsSync(dir)) continue;
+      const files = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
+      for (const file of files) {
+        try {
+          const candidate = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
+          if (entryKey(candidate) === targetKey || candidate.id === idOrKey || String(candidate.id) === String(idOrKey)) {
+            entry = candidate;
+            entryFile = path.join(dir, file);
+            entryType = type;
+            break;
+          }
+        } catch (e) { dbg(`deleteEntry: failed to read/parse ${file}: ${e?.message || e}`); }
       }
-      return max + 1;
-    })();
-
-    const entry = {
-      id: seq,
-      code: `${typeCode}-${parentPad}-${pad(seq)}`,
-      project_id: projectId || undefined,
-      creator_id: state.authUser?.id || state.project?.creator_id || undefined,
-      type,
-      title: type === "chapter" ? `Chapter ${seq}` :
-        type === "note" ? `Note ${seq}` :
-        type === "lore" ? defaultUntitled('lore') :
-        `Reference ${seq}`,
-      updated_at: nowISO(),
-      created_at: nowISO(),
-      order_index,
-      body: "",
-      tags: []
-    };
-    
-    // Add type-specific fields
-    if (type === "chapter") {
-      entry.status = "Draft";
-      entry.synopsis = ""; 
-      entry.word_goal = 0;
-      // Add any other chapter-specific fields
-      dbg(`chapter:create — Creating new chapter "${entry.title}" with ID ${entry.id}`);
+      if (entry) break;
     }
-    else if (type === "note") {
-      entry.category = "Misc";
-      entry.pinned = false;
-      dbg(`note:create — Creating new note "${entry.title}" with ID ${entry.id}`);
-    } else if (type === 'reference') {
-      entry.reference_type = "Glossary";
-      entry.summary = "";
-      entry.source_link = "";
-      dbg(`reference:create — Creating new reference "${entry.title}" with ID ${entry.id}`);
-    } else if (type === 'lore') {
-      // Unified lore entries: freeform subtype stored in `lore_kind`
-      entry.lore_kind = opts.lore_kind || '';
-      entry.summary = "";
-      entry.body = "";
-      entry.tags = [];
-      // Initialize four custom paired fields (name + content)
-      entry.entry1name = '';
-      entry.entry1content = '';
-      entry.entry2name = '';
-      entry.entry2content = '';
-      entry.entry3name = '';
-      entry.entry3content = '';
-      entry.entry4name = '';
-      entry.entry4content = '';
-      dbg(`lore:create — Creating new lore entry "${entry.title}" with ID ${entry.id}`);
-    }
-
-  // Add to state.entries with proper project code if available
-  entry.project_code = state.project?.code;
-    state.entries.push(entry);
-    
-    // Switch to correct tab if needed
-    const target = typeTabMap[entry.type];
-    if (state.activeTab !== target) {
-      dbg(`Tab switch needed for new ${entry.type}: ${state.activeTab} -> ${target}`);
-      switchTab(target);
-    }
-    
-  // Update state and select the new entry
-  state.selectedId = entryKey(entry);
-    
-    // Normalize order indices after adding the new entry
-    normalizeOrderIndexes();
-    
-    // Update UI
-    renderList();
-    populateEditor(entry);
-    
-    // Focus the title input after a short delay to ensure the editor is ready
-    setTimeout(() => {
-      if (type === 'lore' && el.loreTitle) {
-        try { el.loreTitle.focus(); el.loreTitle.select(); } catch (e) {}
-      } else if (el.titleInput) {
-        try { el.titleInput.focus(); el.titleInput.select(); } catch (e) {}
-      }
-    }, 50);
-
-    // Save changes - ensure newly created entries are marked dirty immediately
+    if (!entry || !entryFile) return;
     try {
-      // touchSave normally marks dirty and schedules autosave; be explicit here
-      state.dirty = true;
-      markDirty();
-      scheduleAutosave();
-    } catch (e) { /* best-effort */ }
-    dbg(`created ${type} "${entry.title}" (ID: ${entry.id}) and selected it - pending save`);
+      fs.unlinkSync(entryFile);
+      dbg(`deleted ${entryType}: "${entry.title || "(untitled)"}" file=${entryFile}`);
+    } catch (e) {
+      dbg(`deleteEntry: failed to delete file ${entryFile}: ${e?.message || e}`);
+    }
+    // After deletion, update selection and UI
+    let nextId = null;
+    const list = visibleEntries();
+    if (list.length) {
+      const at = Math.min(entry.order_index || 0, list.length - 1);
+      nextId = list[at]?.id || list[list.length - 1]?.id || null;
+    }
+    if (state.selectedId === entryKey(entry)) {
+      state.selectedId = nextId ? entryKey(list.find(e => e.id === nextId)) : null;
+      if (nextId) populateEditor(list.find(e => e.id === nextId)); else clearEditor();
+    }
+    renderList();
+    touchSave(true);
   }
 
-  // ───────────────── Tabs ─────────────────
-  function switchTab(tabName) {
-    dbg(`switchTab -> requested: ${tabName} (current=${state.activeTab})`);
-    const prevActive = state.activeTab;
-    state.activeTab = tabName;
-    // Update main tabs (writing tabs present in DOM)
-    document.querySelectorAll('.tabs .tab[data-tab]').forEach(t => {
-      const active = t.dataset.tab === tabName;
+
+
+// ───────────────── Tabs ─────────────────
+function switchTab(tabName) {
+  dbg(`switchTab -> requested: ${tabName} (current=${state.activeTab})`);
+  const prevActive = state.activeTab;
+  state.activeTab = tabName;
+
+  // Update main tabs (writing tabs present in DOM)
+  document.querySelectorAll('.tabs .tab[data-tab]').forEach(t => {
+    const active = t.dataset.tab === tabName;
+    t.classList.toggle('active', active);
+    t.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+
+  // Update top-level tabs visual state (Story / Lore / Timeline)
+  try {
+    // Compute which top-tab should appear active: 'lore' and 'timeline' map
+    // directly; any other story-writing tab maps to 'story'
+    const topActive =
+      (tabName === 'lore' || tabName === 'timeline') ? tabName : 'story';
+
+    document.querySelectorAll('.top-tab').forEach(t => {
+      const active = t.dataset.tab === topActive;
       t.classList.toggle('active', active);
       t.setAttribute('aria-selected', active ? 'true' : 'false');
     });
-
-    // Update top-level tabs visual state (Story / Lore / Timeline)
-    try {
-      // Compute which top-tab should appear active: 'lore' and 'timeline' map
-      // directly; any other story-writing tab maps to 'story'
-      const topActive = (tabName === 'lore' || tabName === 'timeline') ? tabName : 'story';
-      document.querySelectorAll('.top-tab').forEach(t => {
-        const active = t.dataset.tab === topActive;
-        t.classList.toggle('active', active);
-        t.setAttribute('aria-selected', active ? 'true' : 'false');
-      });
-    } catch (e) { dbg('switchTab: top-tab visual update failed: ' + (e && e.message)); }
-
-    // If switching to lore or timeline, hide the writing tabs; otherwise show them
-    if (tabName === 'lore' || tabName === 'timeline') {
-      if (el.tabsWriting) el.tabsWriting.classList.add('hidden');
-      if (el.tabsLore) { el.tabsLore.classList.add('hidden'); el.tabsLore.setAttribute('aria-hidden','true'); }
-    } else {
-      if (el.tabsWriting) el.tabsWriting.classList.remove('hidden');
-      if (el.tabsLore) { el.tabsLore.classList.add('hidden'); el.tabsLore.setAttribute('aria-hidden','true'); }
-    }
-
-    // Keep editor pane in sync with the selected tab: show Lore editor when
-    // the Lore tab is active, otherwise show the main Story editor.
-    try {
-      // Only toggle editor panes when entering/exiting Lore mode.
-      // Avoid calling switchToStory when switching between story tabs
-      // (chapters/notes/references) because that can overwrite the
-      // requested tab via state.prevActiveTab.
-      if (tabName === 'lore') {
-        // Save timeline changes if switching away from timeline
-        if (prevActive === 'timeline' && state.dirty) {
-          dbg('switchTab: saving timeline changes before switching to lore');
-          try { saveToDisk(); } catch (e) { dbg('switchTab: timeline save failed: ' + (e?.message || e)); }
-        }
-        // Preserve the previous active tab so we can restore it later when exiting Lore
-        try { state.prevActiveTab = prevActive; } catch (e) {}
-        // Ensure timeline is hidden when switching into lore
-        try { if (el.timeline) el.timeline.classList.add('hidden'); } catch (e) {}
-        switchToLore();
-      } else if (tabName === 'timeline') {
-        // Preserve previous active tab and show timeline pane
-        try { state.prevActiveTab = prevActive; } catch (e) {}
-        try {
-          const editor = document.querySelector('.editor'); if (editor) editor.classList.add('hidden');
-          if (el.loreEditor) el.loreEditor.classList.add('hidden');
-          if (el.timeline) el.timeline.classList.remove('hidden');
-        } catch (e) { dbg(`switchTab -> show timeline failed: ${e?.message || e}`); }
-      } else if (prevActive === 'lore' || prevActive === 'timeline') {
-        // We are coming out of Lore or Timeline into a story tab — save timeline changes first
-        if (prevActive === 'timeline' && state.dirty) {
-          dbg('switchTab: saving timeline changes before leaving timeline tab');
-          try { saveToDisk(); } catch (e) { dbg('switchTab: timeline save failed: ' + (e?.message || e)); }
-        }
-        // restore story UI.
-        switchToStory();
-      } else {
-        // Switching between story tabs only — ensure writing tabs visible
-        if (el.tabsWriting) el.tabsWriting.classList.remove('hidden');
-        if (el.tabsLore) { el.tabsLore.classList.add('hidden'); el.tabsLore.setAttribute('aria-hidden','true'); }
-        // Ensure timeline hidden
-        try { if (el.timeline) el.timeline.classList.add('hidden'); } catch (e) {}
-      }
-    } catch (e) { dbg(`switchTab -> editor sync failed: ${e?.message || e}`); }
-
-  renderList();
-  dbg(`switched tab -> ${tabName}; tabsWriting=${!!el.tabsWriting} tabsLore=${!!el.tabsLore}`);
+  } catch (e) {
+    dbg('switchTab: top-tab visual update failed: ' + (e && e.message));
   }
 
-  // Note: per-subtab switching removed — lore is unified.
+  // If switching to lore or timeline, hide the writing tabs; otherwise show them
+  if (tabName === 'lore' || tabName === 'timeline') {
+    if (el.tabsWriting) el.tabsWriting.classList.add('hidden');
+    if (el.tabsLore) {
+      el.tabsLore.classList.add('hidden');
+      el.tabsLore.setAttribute('aria-hidden', 'true');
+    }
+  } else {
+    if (el.tabsWriting) el.tabsWriting.classList.remove('hidden');
+    if (el.tabsLore) {
+      el.tabsLore.classList.add('hidden');
+      el.tabsLore.setAttribute('aria-hidden', 'true');
+    }
+  }
 
-  // ───────────────── Lore Editor toggles ─────────────────
-  function switchToLore() {
+  // Keep editor pane in sync with the selected tab: show Lore editor when
+  // the Lore tab is active, otherwise show the main Story editor.
+  try {
+    // Only toggle editor panes when entering/exiting Lore mode.
+    // Avoid calling switchToStory when switching between story tabs
+    // (chapters/notes/references) because that can overwrite the
+    // requested tab via state.prevActiveTab.
+    if (tabName === 'lore') {
+      // Save timeline changes if switching away from timeline
+      if (prevActive === 'timeline' && state.dirty) {
+        dbg('switchTab: saving timeline changes before switching to lore');
+        try { saveToDisk(); }
+        catch (e) {
+          dbg('switchTab: timeline save failed: ' + (e?.message || e));
+        }
+      }
+      // Preserve the previous active tab so we can restore it later when exiting Lore
+      try { state.prevActiveTab = prevActive; } catch (e) {}
+
+      // Ensure timeline is hidden when switching into lore
+      try {
+        if (el.timeline) el.timeline.classList.add('hidden');
+      } catch (e) {}
+
+      switchToLore();
+    } else if (tabName === 'timeline') {
+      // Preserve previous active tab and show timeline pane
+      try { state.prevActiveTab = prevActive; } catch (e) {}
+
+      try {
+        const editor = document.querySelector('.editor');
+        if (editor) editor.classList.add('hidden');
+        if (el.loreEditor) el.loreEditor.classList.add('hidden');
+        if (el.timeline) el.timeline.classList.remove('hidden');
+      } catch (e) {
+        dbg(`switchTab -> show timeline failed: ${e?.message || e}`);
+      }
+    } else if (prevActive === 'lore' || prevActive === 'timeline') {
+      // We are coming out of Lore or Timeline into a story tab — save timeline changes first
+      if (prevActive === 'timeline' && state.dirty) {
+        dbg('switchTab: saving timeline changes before leaving timeline tab');
+        try { saveToDisk(); }
+        catch (e) {
+          dbg('switchTab: timeline save failed: ' + (e?.message || e));
+        }
+      }
+      // restore story UI.
+      switchToStory();
+    } else {
+      // Switching between story tabs only — ensure writing tabs visible
+      if (el.tabsWriting) el.tabsWriting.classList.remove('hidden');
+      if (el.tabsLore) {
+        el.tabsLore.classList.add('hidden');
+        el.tabsLore.setAttribute('aria-hidden', 'true');
+      }
+      // Ensure timeline hidden
+      try {
+        if (el.timeline) el.timeline.classList.add('hidden');
+      } catch (e) {}
+    }
+  } catch (e) {
+    dbg(`switchTab -> editor sync failed: ${e?.message || e}`);
+  }
+
+  renderList();
+  dbg(
+    `switched tab -> ${tabName};` +
+    ` tabsWriting=${!!el.tabsWriting} tabsLore=${!!el.tabsLore}`
+  );
+}
+
+// Note: per-subtab switching removed — lore is unified.
+
+// ───────────────── Lore Editor toggles ─────────────────
+function switchToLore() {
     dbg('UI: switching to Lore editor');
     // Remember previous active tab so we can restore it when returning
     try {
@@ -4911,7 +4753,8 @@ function saveUIPrefsDebounced() {
           version: 1
         };
         fs.writeFileSync(SAVE_FILE, JSON.stringify(initialData, null, 2), "utf8");
-        dbg(`workspace:save — Initialized new project structure at: ${projectDir}`);
+        const initDir = path.dirname(SAVE_FILE);
+        dbg(`workspace:save — Initialized new project structure at: ${initDir}`);
       }
 
       // Update changes tracking for new items
@@ -5261,29 +5104,7 @@ function saveUIPrefsDebounced() {
         try { dbg(`workspace:save — wrote ${type}/${filename} (code=${rawToWrite.code ?? 'n/a'} id=${rawToWrite.id ?? 'n/a'})`); } catch (e) { /* best-effort */ }
       }
 
-      // Remove orphan files that are no longer represented in the in-memory state.
-      // Only remove .json files inside the per-type folders. This ensures deleted
-      // entries are removed from the actual project on save (not at delete-button time).
-      try {
-        for (const t of ['chapters', 'notes', 'refs', 'lore']) {
-          const dir = path.join(projectRootDir, t);
-          if (!fs.existsSync(dir)) continue;
-          const files = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
-          for (const f of files) {
-            if (!writtenFilesByType[t].has(f)) {
-              const p = path.join(dir, f);
-              try {
-                fs.unlinkSync(p);
-                dbg(`workspace:save — removed orphan file ${t}/${f}`);
-              } catch (err) {
-                dbg(`workspace:save — failed to remove orphan file ${t}/${f}: ${err?.message || err}`);
-              }
-            }
-          }
-        }
-      } catch (e) {
-        dbg(`workspace:save — orphan cleanup failed: ${e?.message || e}`);
-      }
+      // Orphan file deletion logic removed: all files on disk are preserved unless explicitly deleted by user action.
       
       // Update project.json without the change tracking arrays
       data.entries = state.entries;
@@ -5341,7 +5162,12 @@ function saveUIPrefsDebounced() {
       }
       
       // Save timeline data
-      
+      try {
+        saveTimelineData();
+      } catch (e) {
+        dbg('timeline: saveTimelineData from saveToDisk failed: ' + (e && e.message));
+      }
+
       const t = new Date();
       el.lastSaved && (el.lastSaved.textContent = `Last saved • ${t.toLocaleTimeString()}`);
       el.saveState && (el.saveState.textContent = "Saved");
@@ -5734,9 +5560,14 @@ function saveUIPrefsDebounced() {
       }
       
       dbg("Saving workspace back to project directory...");
+
+      if (!state.currentProjectDir) {
+        throw new Error("No project directory is set for Save Back.");
+      }
+
       // Use the same IPC channel and parameters as other save-back callers
       const r = await ipcRenderer.invoke("project:saveBack", {
-        workspacePath: state.workspacePath,
+        workspacePath: WORKSPACE_DIR,
         projectDir: state.currentProjectDir
       }).catch(e => ({ ok: false, error: String(e) }));
 
@@ -5866,25 +5697,71 @@ el.wordGoal?.addEventListener("input", () => {
     touchSave();
   });
 
-  // Sidebar
-  el.newBtn?.addEventListener("click", () => {
-    let kind = null;
-    let opts = {};
-    if (state.activeTab === 'lore') {
-      // Create a unified lore entry; no prefilled category
-      kind = 'lore';
-    } else {
-      kind = tabTypeMap[state.activeTab];
+  // Local helper to create a new entry for the current tab
+  function createEntryForActiveTab(kindOverride = null, opts = {}) {
+    const tab = state.activeTab;
+    let kind = kindOverride;
+
+    if (!kind) {
+      if (tab === 'lore') {
+        kind = 'lore';
+      } else if (tab && tabTypeMap[tab]) {
+        // chapters → 'chapter', notes → 'note', references → 'reference'
+        kind = tabTypeMap[tab];
+      } else {
+        dbg('createEntryForActiveTab: unknown tab "' + tab + '", defaulting to chapter');
+        kind = 'chapter';
+      }
     }
-    if (!kind) kind = 'chapter';
-    createEntry(kind, opts);
+
+    // Compute seq and order_index for this type
+    const entriesOfType = state.entries.filter(e => e.type === kind);
+    const seq = entriesOfType.length + 1;
+    const order_index = entriesOfType.length
+      ? Math.max(...entriesOfType.map(e => e.order_index || 0)) + 1
+      : 1;
+
+    // If a top-level createEntry exists, use it; otherwise create a minimal entry
+    if (typeof window !== 'undefined' && typeof window.createEntry === 'function') {
+      window.createEntry(kind, seq, order_index, opts);
+      return;
+    }
+
+    // Fallback minimal creation path (in case window.createEntry is missing/broken)
+    dbg('createEntryForActiveTab: window.createEntry not available, using fallback for kind=' + kind);
+
+    const entry = {
+      type: kind,
+      title: kind === 'chapter' ? `Chapter ${seq}` :
+             kind === 'note' ? `Note ${seq}` :
+             kind === 'reference' ? `Reference ${seq}` :
+             defaultUntitled('lore'),
+      updated_at: nowISO(),
+      created_at: nowISO(),
+      order_index,
+      body: "",
+      tags: []
+    };
+
+    state.entries.push(entry);
+    state.selectedId = entryKey(entry);
+    normalizeOrderIndexes();
+    renderList();
+    populateEditor(entry);
+    touchSave();
+  }
+
+  // Sidebar - New button: create an entry for the active tab
+  el.newBtn?.addEventListener("click", () => {
+    dbg('[NEW-BTN-CLICK] Handler fired');
+    createEntryForActiveTab(null, {});
   });
 
   // Hidden empty-state quick create (overlay unused)
   el.quickCreate?.forEach(btn => {
     btn.addEventListener("click", () => {
       const kind = btn.dataset.new;
-      createEntry(kind);
+      createEntryForActiveTab(kind);
     });
   });
 
@@ -6187,7 +6064,7 @@ el.wordGoal?.addEventListener("input", () => {
       if (!confirm("Logout will remove the current project directory and workspace from this machine. Continue?")) return;
       try {
         // First try to save current state
-        if (state.dirty && state.workspacePath) {
+        if (state.dirty && WORKSPACE_DIR) {
           dbg("Saving current state before logout");
           try {
             saveToDisk();
@@ -6196,11 +6073,11 @@ el.wordGoal?.addEventListener("input", () => {
           }
         }
 
-        if (!state.workspacePath) {
+        if (!WORKSPACE_DIR) {
           dbg("No workspace path available for logout");
         } else {
-          dbg(`Active workspace for logout: ${state.workspacePath}`);
-          dbg(`Project directory: ${state.currentProjectDir || '(none)'}`);
+          dbg(`Active workspace for logout: ${WORKSPACE_DIR}`);
+          dbg(`Project directory: ${PROJECTS_DIR || '(none)'}`);
         }
 
         // First save workspace and project if needed
@@ -6214,8 +6091,8 @@ el.wordGoal?.addEventListener("input", () => {
 
         // Try to save to DB
         const r = await ipcRenderer.invoke("auth:logout", { 
-          projectPath: state.workspacePath || null,
-          workspaceExists: state.workspacePath ? fs.existsSync(state.workspacePath) : false 
+          projectPath: WORKSPACE_DIR || null,
+          workspaceExists: WORKSPACE_DIR ? fs.existsSync(WORKSPACE_DIR) : false 
         });
         
         if (!r?.ok) {
@@ -6227,8 +6104,8 @@ el.wordGoal?.addEventListener("input", () => {
         dbg("Logout successful, clearing local state");
         // Clear all state
         state.authUser = null;
-        state.workspacePath = null;
-        state.currentProjectDir = null;
+        // No longer needed: state.workspacePath = null;
+        // No longer needed: state.currentProjectDir = null;
         SAVE_FILE = null;
         
         // Clear timeline data
@@ -6291,10 +6168,10 @@ el.wordGoal?.addEventListener("input", () => {
     // Save Back to Documents project
     if (mod && e.shiftKey && e.key.toLowerCase() === "s") {
       e.preventDefault();
-      if (!state.workspacePath || !state.currentProjectDir) return alert("No active project to save back.");
+      if (!WORKSPACE_DIR || !PROJECTS_DIR) return alert("No active project to save back.");
       try {
         await saveToWorkspaceAndProject();
-        alert(`Workspace saved back to:\n${state.currentProjectDir}`);
+        alert(`Workspace saved back to:\n${PROJECTS_DIR}`);
       } catch (err) {
         return alert(`Save Back failed:\n${err?.message || String(err)}`);
       }
@@ -6411,9 +6288,9 @@ el.wordGoal?.addEventListener("input", () => {
         return;
       }
 
-      state.workspacePath = ap.activePath || null;
-      state.currentProjectDir = ap.currentProjectDir || null;
-      setSaveFileFromWorkspace();
+      // No longer needed: state.workspacePath = ap.activePath || null;
+      // No longer needed: state.currentProjectDir = ap.currentProjectDir || null;
+
 
       // PROBE (DB prefs): read workspace path from DB and log it
       try {
@@ -6429,7 +6306,7 @@ el.wordGoal?.addEventListener("input", () => {
 
 
 
-      if (!state.currentProjectDir || !state.workspacePath) {
+      if (!PROJECTS_DIR || !WORKSPACE_DIR) {
         ensureProjectPicker(); showProjectPicker();
         dbg("No project loaded; picker shown.");
         return;
@@ -6513,5 +6390,123 @@ el.wordGoal?.addEventListener("input", () => {
       }, true);
     } catch (e) { dbg('Failed to install capture-phase sidebar click logger: ' + (e && e.message)); }
 
-  })();
 
+
+
+
+  // ───────────────── Lore Editor toggles ─────────────────
+  function switchToLore() {
+    dbg('UI: switching to Lore editor');
+    // Remember previous active tab so we can restore it when returning
+    try {
+      if (state.activeTab !== 'lore') state.prevActiveTab = state.activeTab;
+    } catch (e) {}
+
+    const editor = document.querySelector('.editor');
+    if (editor) editor.classList.add('hidden');
+    if (el.loreEditor) el.loreEditor.classList.remove('hidden');
+    // Reflect top-tab active state
+    try {
+      document.querySelectorAll('.top-tab').forEach(t => {
+        const active = t.dataset.tab === 'lore';
+        t.classList.toggle('active', active);
+        t.setAttribute('aria-selected', active ? 'true' : 'false');
+      });
+    } catch (e) { dbg('switchToLore: failed to update top-tab visuals: ' + (e && e.message)); }
+    // Ensure timeline is hidden when entering lore
+    try { if (el.timeline) el.timeline.classList.add('hidden'); } catch (e) {}
+    // ensure the sidebar reflects lore subtabs (do not change activeTab here)
+    if (el.tabsWriting) el.tabsWriting.classList.add('hidden');
+    if (el.tabsLore) { el.tabsLore.classList.remove('hidden'); el.tabsLore.setAttribute('aria-hidden','false'); }
+
+    // put focus into lore textarea
+    setTimeout(() => { try { el.loreBody && el.loreBody.focus(); } catch (e) {} }, 40);
+    // Refresh sidebar to show lore entries immediately
+    try { renderList(); } catch (e) { dbg(`switchToLore renderList failed: ${e?.message || e}`); }
+  }
+
+  function switchToStory() {
+    dbg('UI: switching back to Story editor');
+    // Restore the previous active tab if we saved one, otherwise default to chapters
+    const restore = state.prevActiveTab || 'chapters';
+    state.activeTab = restore;
+
+    // Update the tab button active states
+    document.querySelectorAll('.tabs .tab[data-tab]').forEach(t => {
+      const active = t.dataset.tab === state.activeTab;
+      t.classList.toggle('active', active);
+      t.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+
+    // Ensure top-tab visuals reflect Story selected
+    try {
+      document.querySelectorAll('.top-tab').forEach(t => {
+        const active = t.dataset.tab === 'story';
+        t.classList.toggle('active', active);
+        t.setAttribute('aria-selected', active ? 'true' : 'false');
+      });
+    } catch (e) { dbg('switchToStory: failed to update top-tab visuals: ' + (e && e.message)); }
+
+    // Hide timeline pane when returning to story editor
+    try { if (el.timeline) el.timeline.classList.add('hidden'); } catch (e) {}
+
+    // Swap sidebar groups back to writing tabs
+    if (el.tabsWriting) el.tabsWriting.classList.remove('hidden');
+    if (el.tabsLore) { el.tabsLore.classList.add('hidden'); el.tabsLore.setAttribute('aria-hidden','true'); }
+
+    // Show main editor and hide lore editor
+    const editor = document.querySelector('.editor');
+    if (editor) editor.classList.remove('hidden');
+    if (el.loreEditor) el.loreEditor.classList.add('hidden');
+
+    // clear the remembered previous tab
+    try { state.prevActiveTab = null; } catch (e) {}
+
+    // restore editor focus
+    setTimeout(() => { try { el.titleInput && el.titleInput.focus(); } catch (e) {} }, 40);
+
+    // Refresh sidebar immediately and restore sensible selection
+    try {
+      // Ensure the sidebar list reflects the restored active tab
+      renderList();
+      const sel = findEntryByKey(state.selectedId) || visibleEntries()[0];
+      if (sel) { state.selectedId = entryKey(sel); populateEditor(sel); }
+    } catch (e) { dbg(`switchToStory restore failed: ${e?.message || e}`); }
+  }
+
+  // ───────────────── Word Count ─────────────────
+  function updateWordCount() {
+    const cur = findEntryByKey(state.selectedId);
+    if (!el.wordCount) return;
+
+    if (!cur) {
+      el.wordCount.textContent = "Words: 0";
+      if (el.goalWrap) el.goalWrap.style.display = "none";
+      if (el.goalProgress) el.goalProgress.style.display = "none";
+      return;
+    }
+
+    if (cur.type !== "chapter") {
+      el.wordCount.textContent = "Words: —";
+      if (el.goalWrap) el.goalWrap.style.display = "none";
+      if (el.goalProgress) el.goalProgress.style.display = "none";
+      return;
+    }
+
+    const text = el.body?.value || "";
+    const words = text.trim() ? text.trim().split(/\s+/).length : 0;
+    el.wordCount.textContent = `Words: ${words}`;
+
+    // goal/progress (chapters only)
+    const goalVal = (el.wordGoal && el.wordGoal.value !== "")
+      ? parseInt(el.wordGoal.value, 10)
+      : 0;
+    if (el.goalWrap) el.goalWrap.style.display = "";
+    if (el.goalProgress) el.goalProgress.style.display = "";
+    if (el.goalProgress) el.goalProgress.value = words;
+    if (el.wordGoal) el.wordGoal.value = goalVal;
+    if (el.goalProgress) el.goalProgress.max = goalVal;
+  }
+
+})();
+// End of app.js

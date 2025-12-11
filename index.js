@@ -582,6 +582,7 @@ app.whenReady().then(async () => {
     // authoritative. If a controlled import is required, implement it in
     // `src/main/db.load.ts` behind a developer flag. We intentionally do not
     // call any startup DB->local sync helper here.
+    // This log marks the (now disabled) automatic DB->local sync step at startup
     appendDebugLog('startupLoginSync — disabled: automatic DB->local sync removed');
   } catch (e) { /* best-effort */ }
   createWindow();
