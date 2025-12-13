@@ -1,8 +1,19 @@
+
 # Ink Doodle
 A Creative Writing & Worldbuilding App for Fiction Authors
 
-Ink Doodle is a lightweight desktop app built with Electron and JavaScript that helps writers plan and organize long-form fiction projects.  
+Ink Doodle is a lightweight desktop app built with Electron and JavaScript that helps writers plan and organize long-form fiction projects.
 It is designed for novelists, storytellers, and worldbuilders, focusing on structure and lore organization rather than raw text editing.
+
+
+**Status: December 2025**
+- The app is up and running for the most part.
+- The timeline feature is partially a work in progress, especially for supporting multiple timelines.
+- There is not currently a published or packaged version; development is ongoing from source.
+
+**Next Steps:**
+- The next priority is to publish a packaged version of Ink Doodle with full install instructions for all users.
+- Once released, this README will be updated with step-by-step installation and usage instructions for the published version.
 
 ---
 
