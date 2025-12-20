@@ -521,11 +521,13 @@ ipcMain.handle("project:activePath", async () => {
 });
 
 ipcMain.handle("project:saveBack", async () => {
+  const fs = require('fs');
+  const path = require('path');
+  // Removed localSaveDebug.log logging
   try {
     if (!global.currentProjectDir) throw new Error("No project loaded.");
     const ws = WORKSPACE_DIR();
     if (!fs.existsSync(ws)) throw new Error("Workspace missing.");
-    // read project name for logging
     let curName = path.basename(global.currentProjectDir);
     try {
       const pj2 = path.join(global.currentProjectDir, 'data', 'project.json');
@@ -537,35 +539,43 @@ ipcMain.handle("project:saveBack", async () => {
     } catch (e) {}
     appendDebugLog(`project:saveBack — Manual save-back starting for project "${curName}" at ${global.currentProjectDir}`);
     ensureDir(global.currentProjectDir);
-    // Copy workspace -> project (overwrite existing files)
     copyDirSync(ws, global.currentProjectDir);
-    // Debug: enumerate workspace and project files to detect stale files
     try {
       const srcFiles = listFilesRecursive(ws, 10000) || [];
-  const destFiles = listFilesRecursive(global.currentProjectDir, 10000) || [];
+      const destFiles = listFilesRecursive(global.currentProjectDir, 10000) || [];
       const srcSet = new Set(srcFiles.map(s => s.replace(/\\/g, '/')));
       const stale = destFiles.filter(f => !srcSet.has(f.replace(/\\/g, '/')));
+      // ...existing code...
       for (const rel of stale) {
-  const destPath = path.join(global.currentProjectDir, rel);
+        const destPath = path.join(global.currentProjectDir, rel);
         try {
           fs.rmSync(destPath, { force: true });
+          // ...existing code...
         } catch (e) {
           appendDebugLog(`project:saveBack — failed removing stale file ${rel}: ${e?.message || e}`, global.currentProjectDir);
+          // ...existing code...
         }
       }
     } catch (e) {
-  appendDebugLog(`project:saveBack — mirror cleanup failed: ${e?.message || e}`, global.currentProjectDir);
+      appendDebugLog(`project:saveBack — mirror cleanup failed: ${e?.message || e}`, global.currentProjectDir);
+      // ...existing code...
     }
     try {
       const files = listFilesRecursive(ws, 500);
-  appendDebugLog(`project:saveBack — Manual save-back completed for project "${curName}" → ${global.currentProjectDir} (files saved: ${files.length})`, global.currentProjectDir);
-  if (files.length) appendDebugLog(`project:saveBack — Sample files: ${files.slice(0,50).join(', ')}`, global.currentProjectDir);
+      appendDebugLog(`project:saveBack — Manual save-back completed for project "${curName}" → ${global.currentProjectDir} (files saved: ${files.length})`, global.currentProjectDir);
+      // ...existing code...
+      if (files.length) {
+        appendDebugLog(`project:saveBack — Sample files: ${files.slice(0,50).join(', ')}`, global.currentProjectDir);
+        // ...existing code...
+      }
     } catch (e) {
       appendDebugLog(`project:saveBack — Manual save-back completed for project "${curName}" → ${global.currentProjectDir}`);
+      // ...existing code...
     }
     return { ok: true, target: global.currentProjectDir };
   } catch (e) {
     appendDebugLog(`project:saveBack — Failed save-back to ${global.currentProjectDir}: ${e && e.message ? e.message : e}`);
+    // ...existing code...
     return { ok: false, error: String(e) };
   }
 });

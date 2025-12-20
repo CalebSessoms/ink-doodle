@@ -3,12 +3,14 @@ Schema	Name	Type	Owner
 public	chapters	table	neondb_owner
 public	creators	table	neondb_owner
 public	id_counters	table	neondb_owner
+public	lore	table	neondb_owner
 public	notes	table	neondb_owner
 public	prefs	table	neondb_owner
 public	projects	table	neondb_owner
 public	refs	table	neondb_owner
+public	timelines	table	neondb_owner
 public	users	table	neondb_owner
-(8 rows)
+
 
 Table "public.creators"
 Column	Type	Collation	Nullable	Default
@@ -26,6 +28,7 @@ Indexes:
 Referenced by:
 TABLE "chapters" CONSTRAINT "chapters_creator_id_fkey" FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE
 TABLE "id_counters" CONSTRAINT "id_counters_creator_id_fkey" FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE
+TABLE "lore" CONSTRAINT "lore_creator_id_fkey" FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE
 TABLE "notes" CONSTRAINT "notes_creator_id_fkey" FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE
 TABLE "projects" CONSTRAINT "projects_creator_id_fkey" FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE
 TABLE "refs" CONSTRAINT "refs_creator_id_fkey" FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE
@@ -49,6 +52,7 @@ Foreign-key constraints:
 "projects_creator_id_fkey" FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE
 Referenced by:
 TABLE "chapters" CONSTRAINT "chapters_project_id_fkey" FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+TABLE "lore" CONSTRAINT "lore_project_id_fkey" FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 TABLE "notes" CONSTRAINT "notes_project_id_fkey" FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 TABLE "refs" CONSTRAINT "refs_project_id_fkey" FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 Triggers:
@@ -145,7 +149,6 @@ creator_id	integer		not null
 number	integer			
 title	text		not null	
 content	text			
-status	text		not null	'draft'::text
 summary	text			
 tags	text[]			'{}'::text[]
 lore_kind	text			
@@ -168,6 +171,23 @@ Foreign-key constraints:
 "lore_project_id_fkey" FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 Triggers:
 trg_lore_updated_at BEFORE UPDATE ON lore FOR EACH ROW EXECUTE FUNCTION set_updated_at()
+
+Table "public.timelines"
+Column	Type	Collation	Nullable	Default
+id	text		not null	
+code	integer		not null	nextval('timelines_code_seq'::regclass)
+project_id	text			
+creator_id	integer			
+title	text		not null	
+description	text			
+nodes	jsonb			'[]'::jsonb
+links	jsonb			'[]'::jsonb
+settings	jsonb			'{}'::jsonb
+created_at	timestamp without time zone			now()
+updated_at	timestamp without time zone			now()
+Indexes:
+"timelines_pkey" PRIMARY KEY, btree (id)
+"timelines_code_key" UNIQUE CONSTRAINT, btree (code)
 
 Table "public.prefs"
 Column	Type	Collation	Nullable	Default

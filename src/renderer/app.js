@@ -15,7 +15,14 @@ function createNewTimelineFile(dataDir, projectId) {
         if (idx > maxIndex) maxIndex = idx;
       }
     }
-// ...existing code...
+  // ...existing code...
+  if (type === 'chapter' && entry && entry.id === 1) {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] Loaded chapter: ${JSON.stringify(entry)}\n`);
+    } catch (e) {}
+  }
   // Find the lowest available index (fill gaps)
   let nextIndex = 1;
   while (used.has(nextIndex)) nextIndex++;
@@ -3588,7 +3595,7 @@ function saveUIPrefsDebounced() {
 
 
           // Load the project data
-          await appLoadFromDisk();
+          // await appLoadFromDisk();
           hideProjectPicker();
 
           dbg(`Successfully created and loaded new project "${name}"`);
@@ -3833,7 +3840,7 @@ function saveUIPrefsDebounced() {
             state.currentProjectDir = item.dir;
 
 
-            await appLoadFromDisk();
+            // await appLoadFromDisk();
             // updateAllTimelineVisuals call removed; using updateTimelineSelector instead
             hideProjectPicker();
             dbg(`Successfully loaded project from ${item.dir}`);
@@ -3887,6 +3894,11 @@ function saveUIPrefsDebounced() {
   }
 
   function renderList() {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] renderList called, activeTab: ${state.activeTab}, selectedId: ${state.selectedId}, entries: ${state.entries.length}\n`);
+    } catch (e) {}
     const list = visibleEntries();
     if (el.entryList) el.entryList.innerHTML = "";
 
@@ -3999,6 +4011,7 @@ function saveUIPrefsDebounced() {
       if (!state.selectedId && list.length > 0) {
         state.selectedId = entryKey(list[0]);
         dbg(`renderList — no selection; defaulting to ${state.selectedId}`);
+        // This call updates the UI fields after project load
         populateEditor(list[0]);
       }
     }
@@ -4046,7 +4059,8 @@ function saveUIPrefsDebounced() {
       return;
     }
     const kind = entry.type === "chapter" ? "Chapter" :
-                 entry.type === "note" ? "Note" : "Reference";
+           entry.type === "note" ? "Note" :
+           (entry.type === "lore" || entry.type === "lor") ? "Lore" : "Reference";
     const name = entry.title || `(Untitled ${kind})`;
     const confirmed = confirm(`Delete ${kind}:\n"${name}"?\nThis cannot be undone.`);
     dbg(`[confirmAndDelete] Confirmation for entryKey=${entryKey(entry)} id=${entry.id} type=${entry.type}: ${confirmed}`);
@@ -4061,27 +4075,63 @@ function saveUIPrefsDebounced() {
   }
 
   function deleteEntry(idOrKey) {
+    const fs = require('fs');
+    const path = require('path');
+    const workspaceDir = WORKSPACE_DIR;
     const targetKey = String(idOrKey);
-    const entry = state.entries.find(e => entryKey(e) === targetKey);
-    if (!entry) return;
-    const type = entry.type;
-    state.entries = state.entries.filter(e => entryKey(e) !== targetKey);
+    let entry = state.entries.find(e => entryKey(e) === targetKey);
+    let type = entry ? entry.type : null;
+    // Remove from in-memory state if present
+    if (entry) {
+      state.entries = state.entries.filter(e => entryKey(e) !== targetKey);
+    }
 
-    // Recalculate numbering counters after deletion
-    const types = ["chapter", "note", "reference"];
+    // Always attempt to delete file from disk as a backup
+    let entryFile = null, entryType = null, deletedTitle = null;
+    const entryTypes = ['chapters', 'notes', 'refs', 'lore'];
+    for (const t of entryTypes) {
+      const dir = path.join(workspaceDir, t);
+      if (!fs.existsSync(dir)) continue;
+      const files = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
+      for (const file of files) {
+        try {
+          const candidate = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
+          if (entryKey(candidate) === targetKey || candidate.id === idOrKey || String(candidate.id) === String(idOrKey)) {
+            entryFile = path.join(dir, file);
+            entryType = t;
+            deletedTitle = candidate.title || "(untitled)";
+            break;
+          }
+        } catch (e) { dbg(`deleteEntry: failed to read/parse ${file}: ${e?.message || e}`); }
+      }
+      if (entryFile) break;
+    }
+    if (entryFile) {
+      try {
+        fs.unlinkSync(entryFile);
+        dbg(`deleted ${entryType}: "${deletedTitle}" file=${entryFile}`);
+      } catch (e) {
+        dbg(`deleteEntry: failed to delete file ${entryFile}: ${e?.message || e}`);
+      }
+    }
+
+    // Recalculate numbering counters after deletion (include lore)
+    const types = ["chapter", "note", "reference", "lore", "lor"];
     types.forEach(t => {
-        const count = state.entries.filter(e => e.type === t).length;
-        state.counters[t] = count;
+      const count = state.entries.filter(e => e.type === t).length;
+      state.counters[t] = count;
     });
 
     // Renumber order_index for this type
-    const sameType = state.entries.filter(e => e.type === type).sort((a,b)=>a.order_index - b.order_index);
-    sameType.forEach((e, i) => e.order_index = i);
+    if (type) {
+      const sameType = state.entries.filter(e => e.type === type).sort((a,b)=>a.order_index - b.order_index);
+      sameType.forEach((e, i) => e.order_index = i);
+    }
 
     // Choose next selection
     let nextId = null;
     const list = visibleEntries();
-    if (list.length) {
+    if (list.length && entry) {
       // Prefer the item at the deleted item's old order index, else last one
       const at = Math.min(entry.order_index, list.length - 1);
       nextId = list[at]?.id || list[list.length - 1]?.id || null;
@@ -4089,14 +4139,14 @@ function saveUIPrefsDebounced() {
 
     const selectedEntry = findEntryByKey(state.selectedId);
     const nextEntry = nextId ? state.entries.find(e => e.id === nextId) : null;
-    if (selectedEntry && selectedEntry.id === id) {
+    if (entry && selectedEntry && selectedEntry.id === entry.id) {
       state.selectedId = nextEntry ? entryKey(nextEntry) : null;
       if (nextEntry) populateEditor(nextEntry); else clearEditor();
     }
 
     renderList();
     touchSave(true);
-    dbg(`deleted ${type}: "${entry.title || "(untitled)"}"`);
+    dbg(`deleted ${type || entryType}: "${entry ? (entry.title || "(untitled)") : (deletedTitle || "(untitled)")}"`);
   }
 
   function clearEditor() {
@@ -4137,6 +4187,11 @@ function saveUIPrefsDebounced() {
   function selectEntry(idOrKey) {
     // idOrKey may be a numeric id or a canonical key (code or type:id)
     dbg(`selectEntry -> requested: ${String(idOrKey)}`);
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] selectEntry called for idOrKey: ${String(idOrKey)}\n`);
+    } catch (e) {}
     const fs = require('fs');
     const path = require('path');
     const workspaceDir = WORKSPACE_DIR;
@@ -4171,78 +4226,281 @@ function saveUIPrefsDebounced() {
   }
 
   function populateEditor(entry) {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] populateEditor called for entry: ${JSON.stringify(entry)}\n`);
+    } catch (e) {}
     state.projectName = (el.projectName?.textContent || "").trim() || "Untitled Project";
-    if (el.titleInput) el.titleInput.value = entry.title || "";
+    if (el.titleInput) {
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] Setting titleInput.value to: ${entry.title || ""}\n`);
+      } catch (e) {}
+      el.titleInput.value = entry.title || "";
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] titleInput.value now: ${el.titleInput.value}\n`);
+      } catch (e) {}
+    }
 
   if (entry.type === "chapter") {
     show(el.statusWrapper); show(el.tagsWrapper); show(el.synopsisLabel); show(el.synopsis);
     hide(el.noteCategoryWrapper); hide(el.notePinWrapper);
     hide(el.referenceTypeWrapper); hide(el.sourceLinkLabel); hide(el.sourceLink);
     if (el.synopsisLabel) el.synopsisLabel.textContent = "Synopsis";
-    if (el.status) { el.status.disabled = false; el.status.value = entry.status || "Draft"; }
-    if (el.tags) el.tags.value = (entry.tags || []).join(", ");
-    if (el.synopsis) el.synopsis.value = entry.synopsis || "";
+    if (el.status) {
+      let statusValue = entry.status || "Draft";
+      const validOptions = Array.from(el.status.options).map(opt => opt.value);
+      let corrected = false;
+      if (!validOptions.includes(statusValue)) {
+        statusValue = validOptions[0];
+        entry.status = statusValue;
+        corrected = true;
+      }
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] Setting status.value to: ${statusValue}\n`);
+        if (corrected && entry.__filepath) {
+          fs.writeFileSync(entry.__filepath, JSON.stringify(entry, null, 2), 'utf8');
+          fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] Corrected status written to file: ${entry.__filepath}\n`);
+        }
+      } catch (e) {}
+      el.status.disabled = false;
+      el.status.value = statusValue;
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] status.value now: ${el.status.value}\n`);
+      } catch (e) {}
+    }
+    if (el.tags) {
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] Setting tags.value to: ${(entry.tags || []).join(", ")}\n`);
+      } catch (e) {}
+      el.tags.value = (entry.tags || []).join(", ");
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] tags.value now: ${el.tags.value}\n`);
+      } catch (e) {}
+    }
+    if (el.synopsis) {
+      const synopsisValue = entry.synopsis || entry.summary || "";
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] Setting synopsis.value to: ${synopsisValue}\n`);
+      } catch (e) {}
+      el.synopsis.value = synopsisValue;
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] synopsis.value now: ${el.synopsis.value}\n`);
+      } catch (e) {}
+    }
     try {
       const s = entry.synopsis ?? null;
       const sample = s !== null && s !== undefined ? String(s).slice(0,200) : null;
       dbg(`renderer: populateEditor chapter id=${entry.id ?? 'n/a'} synopsisPresent=${sample!==null} synopsisLen=${s ? String(s).length : 0} sample=${sample||'<null>'}`);
     } catch (e) { /* best-effort */ }
-    if (el.body) el.body.value = entry.body || "";
+    if (el.body) {
+      const bodyValue = entry.body || entry.content || "";
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] Setting body.value to: ${bodyValue}\n`);
+      } catch (e) {}
+      el.body.value = bodyValue;
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] body.value now: ${el.body.value}\n`);
+      } catch (e) {}
+    }
 
     // word goal UI (chapters only)
     if (el.goalWrap) el.goalWrap.style.display = "";
     if (el.goalProgress) el.goalProgress.style.display = "flex";
-    if (el.wordGoal) el.wordGoal.value = entry.word_goal ?? "";
+    if (el.wordGoal) {
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] Setting wordGoal.value to: ${entry.word_goal ?? ""}\n`);
+      } catch (e) {}
+      el.wordGoal.value = entry.word_goal ?? "";
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] wordGoal.value now: ${el.wordGoal.value}\n`);
+      } catch (e) {}
+    }
   } else if (entry.type === "note") {
     // hide goal UI for notes
-      if (el.goalWrap) el.goalWrap.style.display = "none";
-      if (el.goalProgress) el.goalProgress.style.display = "none";
-      hide(el.statusWrapper); show(el.tagsWrapper); hide(el.synopsisLabel); hide(el.synopsis);
-      show(el.noteCategoryWrapper); show(el.notePinWrapper);
-      hide(el.referenceTypeWrapper); hide(el.sourceLinkLabel); hide(el.sourceLink);
-      if (el.tags) el.tags.value = (entry.tags || []).join(", ");
-      if (el.noteCategory) el.noteCategory.value = entry.category || "Misc";
-      if (el.notePin) el.notePin.checked = !!entry.pinned;
-      if (el.body) el.body.value = entry.body || "";
-  } else if (entry.type === "reference") {
-      hide(el.statusWrapper); show(el.tagsWrapper); show(el.synopsisLabel); show(el.synopsis);
-      hide(el.wordTargetWrapper);
-      show(el.referenceTypeWrapper); show(el.sourceLinkLabel); show(el.sourceLink);
-      hide(el.noteCategoryWrapper); hide(el.notePinWrapper);
-      if (el.synopsisLabel) el.synopsisLabel.textContent = "Summary";
-      if (el.tags) el.tags.value = (entry.tags || []).join(", ");
-      if (el.referenceType) el.referenceType.value = entry.reference_type || "Glossary";
-      if (el.synopsis) el.synopsis.value = entry.summary || entry.synopsis || "";
+    if (el.goalWrap) el.goalWrap.style.display = "none";
+    if (el.goalProgress) el.goalProgress.style.display = "none";
+    hide(el.statusWrapper); show(el.tagsWrapper); hide(el.synopsisLabel); hide(el.synopsis);
+    show(el.noteCategoryWrapper); show(el.notePinWrapper);
+    hide(el.referenceTypeWrapper); hide(el.sourceLinkLabel); hide(el.sourceLink);
+    if (el.tags) el.tags.value = (entry.tags || []).join(", ");
+    if (el.noteCategory) {
+      let noteCategoryValue = entry.category || "Misc";
+      const validOptions = Array.from(el.noteCategory.options).map(opt => opt.value);
+      let corrected = false;
+      if (!validOptions.includes(noteCategoryValue)) {
+        noteCategoryValue = validOptions[0];
+        entry.category = noteCategoryValue;
+        corrected = true;
+      }
+      el.noteCategory.value = noteCategoryValue;
       try {
-        const s = entry.summary ?? entry.synopsis ?? null;
-        const sample = s !== null && s !== undefined ? String(s).slice(0,200) : null;
-        dbg(`renderer: populateEditor reference id=${entry.id ?? 'n/a'} summaryPresent=${sample!==null} summaryLen=${s ? String(s).length : 0} sample=${sample||'<null>'}`);
-      } catch (e) { /* best-effort */ }
-      if (el.sourceLink) el.sourceLink.value = entry.source_link || "";
-      if (el.body) el.body.value = entry.body || "";
+        const fs = require('fs');
+        const path = require('path');
+        if (corrected && entry.__filepath) {
+          fs.writeFileSync(entry.__filepath, JSON.stringify(entry, null, 2), 'utf8');
+          fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] Corrected note category written to file: ${entry.__filepath}\n`);
+        }
+      } catch (e) {}
     }
-    else if (entry.type === 'lore') {
+    if (el.notePin) el.notePin.checked = !!entry.pinned;
+    if (el.body) {
+      const noteBodyValue = entry.body || entry.content || "";
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] Setting note body.value to: ${noteBodyValue}\n`);
+      } catch (e) {}
+      el.body.value = noteBodyValue;
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] note body.value now: ${el.body.value}\n`);
+      } catch (e) {}
+    }
+  } else if (entry.type === "reference" || entry.type === "ref") {
+    hide(el.statusWrapper); show(el.tagsWrapper); show(el.synopsisLabel); show(el.synopsis);
+    hide(el.wordTargetWrapper);
+    show(el.referenceTypeWrapper); show(el.sourceLinkLabel); show(el.sourceLink);
+    hide(el.noteCategoryWrapper); hide(el.notePinWrapper);
+    if (el.synopsisLabel) el.synopsisLabel.textContent = "Summary";
+    if (el.tags) el.tags.value = (entry.tags || []).join(", ");
+    if (el.referenceType) {
+      let refTypeValue = entry.reference_type || "Glossary";
+      const validOptions = Array.from(el.referenceType.options).map(opt => opt.value);
+      let corrected = false;
+      if (!validOptions.includes(refTypeValue)) {
+        refTypeValue = validOptions[0];
+        entry.reference_type = refTypeValue;
+        corrected = true;
+      }
+      el.referenceType.value = refTypeValue;
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        if (corrected && entry.__filepath) {
+          fs.writeFileSync(entry.__filepath, JSON.stringify(entry, null, 2), 'utf8');
+          fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] Corrected reference type written to file: ${entry.__filepath}\n`);
+        }
+      } catch (e) {}
+    }
+    if (el.synopsis) {
+      const refSynopsisValue = entry.summary || entry.synopsis || "";
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] Setting ref synopsis.value to: ${refSynopsisValue}\n`);
+      } catch (e) {}
+      el.synopsis.value = refSynopsisValue;
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] ref synopsis.value now: ${el.synopsis.value}\n`);
+      } catch (e) {}
+    }
+    try {
+      const s = entry.summary ?? entry.synopsis ?? null;
+      const sample = s !== null && s !== undefined ? String(s).slice(0,200) : null;
+      dbg(`renderer: populateEditor reference id=${entry.id ?? 'n/a'} summaryPresent=${sample!==null} summaryLen=${s ? String(s).length : 0} sample=${sample||'<null>'}`);
+    } catch (e) { /* best-effort */ }
+    if (el.sourceLink) el.sourceLink.value = entry.source_link || "";
+    if (el.body) {
+      const refBodyValue = entry.body || entry.content || "";
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] Setting ref body.value to: ${refBodyValue}\n`);
+      } catch (e) {}
+      el.body.value = refBodyValue;
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] ref body.value now: ${el.body.value}\n`);
+      } catch (e) {}
+    }
+    }
+    else if (entry.type === 'lore' || entry.type === 'lor') {
       // Unified lore entries: populate the Lore editor fields and hide chapter-only controls
       hide(el.statusWrapper); hide(el.synopsisLabel); hide(el.synopsis);
       hide(el.noteCategoryWrapper); hide(el.notePinWrapper);
       hide(el.referenceTypeWrapper); hide(el.sourceLinkLabel); hide(el.sourceLink);
 
       // Populate lore-specific editor (in the dedicated lore pane)
-  if (el.loreTitle) { if ('value' in el.loreTitle) el.loreTitle.value = entry.title || ''; else el.loreTitle.textContent = entry.title || ''; }
-  if (el.loreKind) { try { el.loreKind.classList.remove('hidden'); } catch (e) {} if ('value' in el.loreKind) el.loreKind.value = entry.lore_kind || ''; else el.loreKind.textContent = entry.lore_kind || ''; }
-  if (el.loreTags) { if ('value' in el.loreTags) el.loreTags.value = (entry.tags || []).join(', '); else el.loreTags.textContent = (entry.tags || []).join(', '); }
-  if (el.loreSummary) { if ('value' in el.loreSummary) el.loreSummary.value = entry.summary || ''; else el.loreSummary.textContent = entry.summary || ''; }
-  if (el.loreBody) { if ('value' in el.loreBody) el.loreBody.value = entry.body || ''; else el.loreBody.textContent = entry.body || ''; }
+  const fs = require('fs');
+  const path = require('path');
+  if (el.loreTitle) {
+    try { fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] Setting loreTitle to: ${entry.title || ''}\n`); } catch (e) {}
+    if ('value' in el.loreTitle) el.loreTitle.value = entry.title || ''; else el.loreTitle.textContent = entry.title || '';
+    try { fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] loreTitle now: ${el.loreTitle.value || el.loreTitle.textContent}\n`); } catch (e) {}
+  }
+  if (el.loreKind) {
+    try { el.loreKind.classList.remove('hidden'); } catch (e) {}
+    try { fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] Setting loreKind to: ${entry.lore_kind || ''}\n`); } catch (e) {}
+    if ('value' in el.loreKind) el.loreKind.value = entry.lore_kind || ''; else el.loreKind.textContent = entry.lore_kind || '';
+    try { fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] loreKind now: ${el.loreKind.value || el.loreKind.textContent}\n`); } catch (e) {}
+  }
+  if (el.loreTags) {
+    try { fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] Setting loreTags to: ${(entry.tags || []).join(', ')}\n`); } catch (e) {}
+    if ('value' in el.loreTags) el.loreTags.value = (entry.tags || []).join(', '); else el.loreTags.textContent = (entry.tags || []).join(', ');
+    try { fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] loreTags now: ${el.loreTags.value || el.loreTags.textContent}\n`); } catch (e) {}
+  }
+  if (el.loreSummary) {
+    try { fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] Setting loreSummary to: ${entry.summary || ''}\n`); } catch (e) {}
+    if ('value' in el.loreSummary) el.loreSummary.value = entry.summary || ''; else el.loreSummary.textContent = entry.summary || '';
+    try { fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] loreSummary now: ${el.loreSummary.value || el.loreSummary.textContent}\n`); } catch (e) {}
+  }
+  if (el.loreBody) {
+    const loreBodyValue = entry.body || entry.content || '';
+    try { fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] Setting loreBody to: ${loreBodyValue}\n`); } catch (e) {}
+    if ('value' in el.loreBody) el.loreBody.value = loreBodyValue; else el.loreBody.textContent = loreBodyValue;
+    try { fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] loreBody now: ${el.loreBody.value || el.loreBody.textContent}\n`); } catch (e) {}
+  }
 
-  // Populate custom paired fields if present on the entry
-  if (el.entry1name) { if ('value' in el.entry1name) el.entry1name.value = entry.entry1name || ''; else el.entry1name.textContent = entry.entry1name || ''; }
-  if (el.entry1content) { if ('value' in el.entry1content) el.entry1content.value = entry.entry1content || ''; else el.entry1content.textContent = entry.entry1content || ''; }
-  if (el.entry2name) { if ('value' in el.entry2name) el.entry2name.value = entry.entry2name || ''; else el.entry2name.textContent = entry.entry2name || ''; }
-  if (el.entry2content) { if ('value' in el.entry2content) el.entry2content.value = entry.entry2content || ''; else el.entry2content.textContent = entry.entry2content || ''; }
-  if (el.entry3name) { if ('value' in el.entry3name) el.entry3name.value = entry.entry3name || ''; else el.entry3name.textContent = entry.entry3name || ''; }
-  if (el.entry3content) { if ('value' in el.entry3content) el.entry3content.value = entry.entry3content || ''; else el.entry3content.textContent = entry.entry3content || ''; }
-  if (el.entry4name) { if ('value' in el.entry4name) el.entry4name.value = entry.entry4name || ''; else el.entry4name.textContent = entry.entry4name || ''; }
-  if (el.entry4content) { if ('value' in el.entry4content) el.entry4content.value = entry.entry4content || ''; else el.entry4content.textContent = entry.entry4content || ''; }
+  // Populate custom paired fields if present on the entry (handle both camelCase and snake_case)
+  for (let i = 1; i <= 4; i++) {
+    const nameKey = `entry${i}name`;
+    const nameKeySnake = `entry${i}_name`;
+    const contentKey = `entry${i}content`;
+    const contentKeySnake = `entry${i}_content`;
+    const elName = el[nameKey];
+    const elContent = el[contentKey];
+    const entryNameValue = entry[nameKey] || entry[nameKeySnake] || '';
+    const entryContentValue = entry[contentKey] || entry[contentKeySnake] || '';
+    if (elName) {
+      try { fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] Setting ${nameKey} to: ${entryNameValue}\n`); } catch (e) {}
+      if ('value' in elName) elName.value = entryNameValue; else elName.textContent = entryNameValue;
+      try { fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] ${nameKey} now: ${elName.value || elName.textContent}\n`); } catch (e) {}
+    }
+    if (elContent) {
+      try { fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] Setting ${contentKey} to: ${entryContentValue}\n`); } catch (e) {}
+      if ('value' in elContent) elContent.value = entryContentValue; else elContent.textContent = entryContentValue;
+      try { fs.appendFileSync(path.join(process.cwd(), 'loadDebug.log'), `[${new Date().toISOString()}] [populateEditor] ${contentKey} now: ${elContent.value || elContent.textContent}\n`); } catch (e) {}
+    }
+  }
 
       // Ensure story editor hidden when lore is active (switchTab handles pane visibility)
       if (el.goalWrap) el.goalWrap.style.display = 'none';
@@ -4413,7 +4671,8 @@ function switchTab(tabName) {
     dbg(`switchTab -> editor sync failed: ${e?.message || e}`);
   }
 
-  renderList();
+  // This call refreshes the sidebar and entry list after switching tabs
+  renderList(); // Renders the sidebar list of entries, selects the first entry if none selected, and updates the editor UI fields
   dbg(
     `switched tab -> ${tabName};` +
     ` tabsWriting=${!!el.tabsWriting} tabsLore=${!!el.tabsLore}`
@@ -4496,7 +4755,8 @@ function switchToLore() {
     // Refresh sidebar immediately and restore sensible selection
     try {
       // Ensure the sidebar list reflects the restored active tab
-      renderList();
+      // This call refreshes the sidebar and entry list after loading a project from disk
+      renderList(); // Renders the sidebar list of entries, selects the first entry if none selected, and updates the editor UI fields
       const sel = findEntryByKey(state.selectedId) || visibleEntries()[0];
       if (sel) { state.selectedId = entryKey(sel); populateEditor(sel); }
     } catch (e) { dbg(`switchToStory restore failed: ${e?.message || e}`); }
@@ -5259,6 +5519,35 @@ function switchToLore() {
                   }
                 }
 
+                // Validate and correct dropdown/select fields on load
+                let corrected = false;
+                if (type === 'chapters') {
+                  const validStatus = ["Draft", "Revise", "Final"];
+                  if (raw.status && !validStatus.includes(raw.status)) {
+                    raw.status = validStatus[0];
+                    corrected = true;
+                  }
+                } else if (type === 'notes') {
+                  const validCategories = ["Research", "Idea", "To-do", "Misc"];
+                  if (raw.category && !validCategories.includes(raw.category)) {
+                    raw.category = validCategories[0];
+                    corrected = true;
+                  }
+                } else if (type === 'refs') {
+                  const validRefTypes = ["Glossary", "Timeline", "Resource", "Misc"];
+                  if (raw.reference_type && !validRefTypes.includes(raw.reference_type)) {
+                    raw.reference_type = validRefTypes[0];
+                    corrected = true;
+                  }
+                }
+                if (corrected) {
+                  try {
+                    fs.writeFileSync(entryPath, JSON.stringify(raw, null, 2), 'utf8');
+                  } catch (e) {
+                    dbg(`workspace:load — failed to correct dropdown value in ${entryPath}: ${e.message}`);
+                  }
+                }
+
                 // Build a lightweight view for UI while preserving the original raw object and filename
                 const inferredType = type === 'chapters' ? 'chapter' : type === 'notes' ? 'note' : type === 'refs' ? 'reference' : type === 'lore' ? 'lore' : 'reference';
                 const idFromRaw = (raw && raw.id !== undefined) ? (typeof raw.id === 'number' ? raw.id : Number(String(raw.id).match(/(\d+)/)?.[1])) : undefined;
@@ -5472,9 +5761,9 @@ function switchToLore() {
       });
 
   const sel = findEntryByKey(state.selectedId) || visibleEntries()[0];
-  if (sel) { state.selectedId = entryKey(sel); populateEditor(sel); }
+  if (sel) { state.selectedId = entryKey(sel); populateEditor(sel); /* Updates the editor UI fields for the selected entry after project load */ }
 
-      renderList();
+  renderList(); /* Refreshes the sidebar and entry list after project load */
       
       // Load timeline data
       loadTimelineData();
@@ -6141,9 +6430,28 @@ el.wordGoal?.addEventListener("input", () => {
       dbg(`[editor-delete-btn] Confirming delete for entryKey=${entryKey(cur)} id=${cur.id} type=${cur.type}`);
       confirmAndDelete(cur.id);
     } else {
-      dbg(`[editor-delete-btn] No current entry to delete.`);
+      dbg(`[editor-delete-btn] No current entry to delete. Attempting backup file delete for selectedId=${state.selectedId}`);
+      // Call deleteEntry directly as a backup
+      deleteEntry(state.selectedId);
     }
   });
+
+  // Lore editor delete button (ensure separate handler if needed)
+  const loreDeleteBtn = document.querySelector('#lore-editor #editor-delete-btn');
+  if (loreDeleteBtn) {
+    loreDeleteBtn.addEventListener('click', () => {
+      const cur = findEntryByKey(state.selectedId);
+      dbg(`[lore-editor-delete-btn] Clicked. selectedId=${state.selectedId} cur=${cur ? entryKey(cur) : 'null'}`);
+      if (cur) {
+        dbg(`[lore-editor-delete-btn] Confirming delete for entryKey=${entryKey(cur)} id=${cur.id} type=${cur.type}`);
+        confirmAndDelete(cur.id);
+      } else {
+        dbg(`[lore-editor-delete-btn] No current entry to delete. Attempting backup file delete for selectedId=${state.selectedId}`);
+        // Call deleteEntry directly as a backup
+        deleteEntry(state.selectedId);
+      }
+    });
+  }
 
   // Lore editor buttons
   el.loreSwitchBtn?.addEventListener('click', () => {
@@ -6312,7 +6620,7 @@ el.wordGoal?.addEventListener("input", () => {
         return;
       }
 
-      await appLoadFromDisk();
+      // await appLoadFromDisk();
       renderList();
       // Ensure main tab handlers are bound after DOM and data load
       try {
